@@ -21,6 +21,7 @@ import { cn } from '@/lib/utils';
 import { ModelControls } from '../../ModelControls';
 import { ComposerActionButtons } from './ComposerActionButtons';
 import { ComposerAttachmentControls } from './ComposerAttachmentControls';
+import { EnterKeyToggle } from './EnterKeyToggle';
 import { FocusModeButton } from './FocusModeButton';
 import { PermissionAutoAcceptButton } from './PermissionAutoAcceptButton';
 
@@ -47,6 +48,7 @@ export interface ComposerFooterProps {
     canAbort: boolean;
     hasContent: boolean;
     isExpandedInput: boolean;
+    enterToSend: boolean;
     permissionAutoAcceptEnabled: boolean;
     isPermissionAutoAcceptInteractive: boolean;
     dictationActive: boolean;
@@ -58,6 +60,7 @@ export interface ComposerFooterProps {
     onOpenAttachSheet: () => void;
     onToggleExpandedInput: () => void;
     onTogglePermissionAutoAccept: () => void;
+    onToggleEnterToSend: () => void;
     onPrimaryAction: () => void;
     onQueueMessage: () => void;
     onAbort: () => void;
@@ -87,6 +90,7 @@ export function ComposerFooter(props: ComposerFooterProps) {
         canAbort,
         hasContent,
         isExpandedInput,
+        enterToSend,
         permissionAutoAcceptEnabled,
         isPermissionAutoAcceptInteractive,
         dictationActive,
@@ -97,6 +101,7 @@ export function ComposerFooter(props: ComposerFooterProps) {
         onOpenAttachSheet,
         onToggleExpandedInput,
         onTogglePermissionAutoAccept,
+        onToggleEnterToSend,
         onPrimaryAction,
         onQueueMessage,
         onAbort,
@@ -171,6 +176,12 @@ export function ComposerFooter(props: ComposerFooterProps) {
                                 >
                                     <Icon name="mic" className={cn(iconSizeClass, 'text-current')} />
                                 </button>
+                                <EnterKeyToggle
+                                    footerIconButtonClass={footerIconButtonClass}
+                                    iconSizeClass={iconSizeClass}
+                                    enterToSend={enterToSend}
+                                    onToggle={onToggleEnterToSend}
+                                />
                                 <ComposerActionButtons
                                     isMobile={isMobile}
                                     footerIconButtonClass={footerIconButtonClass}
@@ -237,6 +248,12 @@ export function ComposerFooter(props: ComposerFooterProps) {
                             onInsert={onDictationInsert}
                             onInsertAndSend={onDictationInsertAndSend}
                             onContentHeightChange={onDictationContentHeightChange}
+                        />
+                        <EnterKeyToggle
+                            footerIconButtonClass={footerIconButtonClass}
+                            iconSizeClass={iconSizeClass}
+                            enterToSend={enterToSend}
+                            onToggle={onToggleEnterToSend}
                         />
                         <ComposerActionButtons
                             isMobile={isMobile}

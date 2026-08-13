@@ -6,11 +6,13 @@
  *
  * 1. The native answer. On iOS the shell reads `GCKeyboard` and stamps
  *    `window.__OPENCHAMBER_HARDWARE_KEYBOARD__` at document start, then keeps it
- *    live via `oc:hardware-keyboard` (see BridgeViewController). This is
- *    authoritative and — crucially — known BEFORE the user focuses anything, so
- *    the draft screen and composer start in the right shape instead of
- *    re-laying-out after the first focus.
- * 2. Inference, for runtimes with no native answer (Android, hosted mobile).
+ *    live via `oc:hardware-keyboard` (see BridgeViewController). On Android the
+ *    Capacitor `HardwareKeyboardPlugin` publishes the same stamp and event from
+ *    an input-device scan, config changes, hardware key events, and foreground
+ *    resumes. Both are authoritative and — crucially — known BEFORE the user
+ *    focuses anything, so the draft screen and composer start in the right
+ *    shape instead of re-laying-out after the first focus.
+ * 2. Inference, for runtimes with no native answer (hosted mobile).
  *    A `keyboardWillShow` with a real height means there IS a soft keyboard; a
  *    tiny height means only iOS' shortcut strip; focus with no event at all
  *    within a short window means nothing was presented. Inference is ignored

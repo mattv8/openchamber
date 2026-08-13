@@ -1247,6 +1247,8 @@ export const dict: Record<I18nKey, string> = {
   'chat.chatInput.actions.modelAgentSettings': 'Model and agent settings',
   'chat.chatInput.actions.queueMessageAria': 'Queue message',
   'chat.chatInput.actions.sendMessageAria': 'Send message',
+  'chat.chatInput.actions.enterToSend': 'Enter wysyła',
+  'chat.chatInput.actions.shiftEnterToSend': 'Shift+Enter wysyła',
   'chat.chatInput.actions.stopGeneratingAria': 'Stop generating',
   'chat.chatInput.branch': 'Gałąź',
   'chat.chatInput.draftPicker.projectTitle': 'Projekt',

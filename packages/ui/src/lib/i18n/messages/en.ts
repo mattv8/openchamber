@@ -2290,6 +2290,8 @@ export const dict = {
   'chat.chatInput.actions.linkGithubPr': 'Link GitHub PR',
   'chat.chatInput.actions.modelAgentSettings': 'Model and agent settings',
   'chat.chatInput.actions.sendMessageAria': 'Send message',
+  'chat.chatInput.actions.enterToSend': 'Enter sends',
+  'chat.chatInput.actions.shiftEnterToSend': 'Shift+Enter sends',
   'chat.chatInput.actions.queueMessageAria': 'Queue message',
   'chat.chatInput.actions.stopGeneratingAria': 'Stop generating',
   'chat.chatInput.focusMode.toggleAria': 'Toggle focus mode',

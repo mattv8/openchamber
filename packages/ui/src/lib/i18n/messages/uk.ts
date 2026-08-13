@@ -2268,6 +2268,8 @@ export const dict: Record<I18nKey, string> = {
   "chat.chatInput.actions.linkGithubPr": "Пов’язати GitHub PR",
   "chat.chatInput.actions.modelAgentSettings": "Параметри моделі та агента",
   "chat.chatInput.actions.sendMessageAria": "Надіслати повідомлення",
+  'chat.chatInput.actions.enterToSend': 'Enter надсилає',
+  'chat.chatInput.actions.shiftEnterToSend': 'Shift+Enter надсилає',
   "chat.chatInput.actions.queueMessageAria": "Поставити повідомлення в чергу",
   "chat.chatInput.actions.stopGeneratingAria": "Припинити генерацію",
   "chat.chatInput.focusMode.toggleAria": "Перемкнути режим фокусування",

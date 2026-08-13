@@ -175,13 +175,13 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
         const hostRef = React.useRef<HTMLDivElement | null>(null);
         const viewRef = React.useRef<EditorView | null>(null);
 
-        // The real keydown's shift state for the LAST Enter that reached the
-        // editor. CodeMirror defers Enter on iOS (and Chrome Android) and
+        // The real keydown's modifier state for the LAST Enter that reached
+        // the editor. CodeMirror defers Enter on iOS (and Chrome Android) and
         // re-dispatches it as a synthetic keydown built from the key name
-        // alone, dropping every modifier (see `trackRealEnterShift` and the
+        // alone, dropping every modifier (see `trackRealEnterMods` and the
         // `interceptKeys` handler below); this ref is what lets the deferred
-        // event still tell Shift+Enter from Enter.
-        const lastRealEnterShiftRef = React.useRef(false);
+        // event still tell Shift+Enter from Enter, or Ctrl/Cmd+Enter from Enter.
+        const lastRealEnterModsRef = React.useRef({ shiftKey: false, ctrlKey: false, metaKey: false });
 
         // Callbacks reach the CodeMirror extensions through a ref: the view is
         // built once and must not be torn down when a handler identity changes,
@@ -225,10 +225,13 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
             const interceptKeys: KeyBinding[] = [{
                 any: (_view, event) => {
                     // A deferred Enter lost its modifiers in the re-dispatch;
-                    // give the caller's policy (Enter vs Shift+Enter) back the
-                    // shift state it saw on the real keydown.
-                    if (event.key === 'Enter' && isDeferredSyntheticEvent(event) && lastRealEnterShiftRef.current) {
-                        Object.defineProperty(event, 'shiftKey', { value: true });
+                    // give the caller's policy (Enter vs Shift/Ctrl+Enter) back
+                    // the modifier state it saw on the real keydown.
+                    if (event.key === 'Enter' && isDeferredSyntheticEvent(event)) {
+                        const mods = lastRealEnterModsRef.current;
+                        if (mods.shiftKey) Object.defineProperty(event, 'shiftKey', { value: true });
+                        if (mods.ctrlKey) Object.defineProperty(event, 'ctrlKey', { value: true });
+                        if (mods.metaKey) Object.defineProperty(event, 'metaKey', { value: true });
                     }
                     return handlersRef.current.onKeyDown?.(event) ?? false;
                 },
@@ -310,20 +313,26 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
             // keydown is captured without running the keymaps, the browser's
             // native newline goes through, and the keymaps then run against a
             // synthetic keydown `dispatchKey` builds from the key name alone —
-            // which has NO modifiers. Recording the real shift state here (a
+            // which has NO modifiers. Recording the real modifier state here (a
             // plain listener, registered after CodeMirror's own, so it runs
             // after the deferral decision but before the deferred dispatch)
             // lets the deferred Enter be re-presented with Shift+Enter intact
             // instead of arriving as a plain Enter that "sends" where Enter
             // sends. Without it, Shift+Enter on iOS/Android submits the
-            // message instead of inserting a newline. The listener lives on
+            // message instead of inserting a newline. Ctrl/Cmd+Enter gets the
+            // same treatment so a hardware-keyboard policy can tell it apart
+            // from a plain Enter on Chrome Android. The listener lives on
             // the kept-alive view's contentDOM, so it stays across mounts and
             // keeps feeding the same ref the `interceptKeys` closure reads.
-            const trackRealEnterShift = (event: KeyboardEvent) => {
+            const trackRealEnterMods = (event: KeyboardEvent) => {
                 if (event.key !== 'Enter' || isDeferredSyntheticEvent(event)) return;
-                lastRealEnterShiftRef.current = event.shiftKey;
+                lastRealEnterModsRef.current = {
+                    shiftKey: event.shiftKey,
+                    ctrlKey: event.ctrlKey,
+                    metaKey: event.metaKey,
+                };
             };
-            view.contentDOM.addEventListener('keydown', trackRealEnterShift);
+            view.contentDOM.addEventListener('keydown', trackRealEnterMods);
 
             return () => {
                 viewRef.current = null;
