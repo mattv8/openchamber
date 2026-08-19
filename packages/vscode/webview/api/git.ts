@@ -8,6 +8,10 @@ import { sendBridgeMessage } from './bridge';
 import { GitPathUnavailableError, gitSubmoduleStateSchema } from '@openchamber/ui/lib/api/git-path-diff';
 import type {
   GitAPI,
+  GitHistoryMergeBaseResponse,
+  GitHistoryOptions,
+  GitHistoryPage,
+  GitHistoryRefsResponse,
   GitStatus,
   GitPathDiffResponse,
   GetGitDiffOptions,
@@ -89,6 +93,27 @@ export const createVSCodeGitAPI = (): GitAPI => ({
 
   getGitStatus: async (directory: string, options?: { mode?: 'light'; fresh?: boolean }): Promise<GitStatus> => {
     return sendBridgeMessage<GitStatus>('api:git/status', { directory, mode: options?.mode });
+  },
+
+  getGitHistoryRefs: async (directory: string): Promise<GitHistoryRefsResponse> => {
+    return sendBridgeMessage<GitHistoryRefsResponse>('api:git/history/refs', { directory });
+  },
+
+  getGitHistory: async (directory: string, options: GitHistoryOptions): Promise<GitHistoryPage> => {
+    return sendBridgeMessage<GitHistoryPage>('api:git/history', {
+      directory,
+      ...(options.refs ? { refs: options.refs } : {}),
+      ...(options.all === true ? { all: true } : {}),
+      ...(options.cursor ? { cursor: options.cursor } : {}),
+      ...(options.limit != null ? { limit: options.limit } : {}),
+    });
+  },
+
+  getGitHistoryMergeBase: async (directory: string, options: { refs: string[] }): Promise<GitHistoryMergeBaseResponse> => {
+    return sendBridgeMessage<GitHistoryMergeBaseResponse>('api:git/history/merge-base', {
+      directory,
+      refs: options.refs,
+    });
   },
 
   getGitDiff: async (directory: string, options: GetGitDiffOptions): Promise<GitPathDiffResponse> => {
