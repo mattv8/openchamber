@@ -722,6 +722,7 @@ describe('useUIStore git repository pane state', () => {
     useUIStore.getState().setGitRepositoryPaneState('/repo///', {
       graphCollapsed: false,
       graphHeight: 999,
+      previewWidth: 9999,
       graphFilterMode: 'manual',
       graphManualRefIds: ['refs/tags/v1', 'refs/tags/v1', ' refs/heads/main '],
     }, 'runtime-a');
@@ -731,12 +732,14 @@ describe('useUIStore git repository pane state', () => {
 
     expect(runtimeA.graphCollapsed).toBe(false);
     expect(runtimeA.graphHeight).toBe(720);
+    expect(runtimeA.previewWidth).toBe(960);
     expect(runtimeA.graphFilterMode).toBe('manual');
     expect(runtimeA.graphManualRefIds).toEqual(['refs/heads/main', 'refs/tags/v1']);
     expect(runtimeB).toEqual({
       changesCollapsed: false,
       graphCollapsed: true,
       graphHeight: 280,
+      previewWidth: 360,
       graphFilterMode: 'auto',
       graphManualRefIds: [],
     });
@@ -748,6 +751,7 @@ describe('useUIStore git repository pane state', () => {
         '["runtime-a","/repo"]': {
           graphCollapsed: false,
           graphHeight: 10,
+          previewWidth: 10,
           graphFilterMode: 'manual',
           graphManualRefIds: ['refs/tags/v1', '', 'refs/tags/v1'],
         },
@@ -757,13 +761,14 @@ describe('useUIStore git repository pane state', () => {
     const paneStates = JSON.parse(JSON.stringify(migrated)).gitRepositoryPaneStates;
 
     expect(paneStates).toEqual({
-      '["runtime-a","/repo"]': {
-        changesCollapsed: false,
-        graphCollapsed: false,
-        graphHeight: 180,
-        graphFilterMode: 'manual',
-        graphManualRefIds: ['refs/tags/v1'],
-        },
+        '["runtime-a","/repo"]': {
+          changesCollapsed: false,
+          graphCollapsed: false,
+          graphHeight: 180,
+          previewWidth: 320,
+          graphFilterMode: 'manual',
+          graphManualRefIds: ['refs/tags/v1'],
+          },
     });
   });
 });
