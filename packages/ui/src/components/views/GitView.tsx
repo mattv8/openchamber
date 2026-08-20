@@ -63,6 +63,8 @@ import { DirtyBranchSwitchDialog } from './git/DirtyBranchSwitchDialog';
 import { InProgressOperationBanner } from './git/InProgressOperationBanner';
 import { BranchIntegrationSection, type OperationLogEntry } from './git/BranchIntegrationSection';
 import { deriveBaseBranch } from './git/baseBranch';
+import { createGitCommitHoverDetailsCache } from './git/gitCommitHoverCache';
+import { selectGitCommitHoverRemote } from './git/gitCommitRemote';
 import { getFreshestPrStatusForBranch, useGitHubPrStatusStore } from '@/stores/useGitHubPrStatusStore';
 import { createGitIndexMutationQueue, type GitIndexMutationDirection, type GitIndexMutationQueue } from './git/gitIndexMutationQueue';
 import type { GitRemote } from '@/lib/gitApi';
@@ -206,7 +208,7 @@ type GitViewProps = {
 
 export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
   const { t } = useI18n();
-  const { git } = useRuntimeAPIs();
+  const { git, github } = useRuntimeAPIs();
   const currentDirectory = useEffectiveDirectory();
   const [worktreeBootstrapStatus, setWorktreeBootstrapStatus] = React.useState<'pending' | 'ready' | 'failed' | null>(null);
   const [isWaitingForGitRefreshAfterBootstrap, setIsWaitingForGitRefreshAfterBootstrap] = React.useState(false);
@@ -1475,6 +1477,38 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
       pushUrl: remoteUrl ?? '',
     }));
   }, [remotes, remoteBranches, remoteUrl, status?.tracking]);
+  const hoverRemote = React.useMemo(
+    () => selectGitCommitHoverRemote(effectiveRemotes),
+    [effectiveRemotes],
+  );
+  const hoverRemoteName = hoverRemote?.name ?? null;
+  const hoverRemoteUrl = hoverRemote?.url ?? null;
+  const hoverDetailsCache = React.useMemo(() => {
+    const commitDetails = github?.commitDetails;
+    if (!commitDetails) {
+      return null;
+    }
+
+    const ImageConstructor = globalThis.Image;
+
+    return createGitCommitHoverDetailsCache({
+      load: ({ directory, hash, remoteName }) => commitDetails(directory, hash, remoteName ?? undefined),
+      preloadImage: (url) => new Promise<boolean>((resolve) => {
+        if (!ImageConstructor) {
+          resolve(false);
+          return;
+        }
+        const image = new ImageConstructor();
+        image.onload = () => resolve(true);
+        image.onerror = () => resolve(false);
+        image.src = url;
+      }),
+    });
+  }, [github]);
+
+  React.useEffect(() => () => {
+    hoverDetailsCache?.dispose();
+  }, [hoverDetailsCache]);
 
   const currentBranch = status?.current ?? null;
 
@@ -2429,11 +2463,15 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
     <GitGraphPanel
       directory={gitDirectory ?? currentDirectory ?? ''}
       git={git}
+      isActive={isActive}
       expandedCommitHashes={expandedCommitHashes}
       onToggleCommit={handleToggleCommit}
       commitFilesMap={commitFilesMap}
       loadingCommitHashes={loadingCommitHashes}
       onCopyHash={handleCopyCommitHash}
+      hoverRemoteName={hoverRemoteName}
+      hoverRemoteUrl={hoverRemoteUrl}
+      hoverDetailsCache={hoverDetailsCache}
       onConflict={handleGraphConflict}
       onActionSuccess={handleGraphActionSuccess}
     />
@@ -2630,6 +2668,9 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
                 loadingCommitHashes={loadingCommitHashes}
                 onCopyHash={handleCopyCommitHash}
                 directory={gitDirectory ?? undefined}
+                hoverRemoteName={hoverRemoteName}
+                hoverRemoteUrl={hoverRemoteUrl}
+                hoverDetailsCache={hoverDetailsCache}
                 showHeader={false}
                 contentMaxHeightClassName="h-full max-h-none"
                 branchDivider={historyBranchDivider}
