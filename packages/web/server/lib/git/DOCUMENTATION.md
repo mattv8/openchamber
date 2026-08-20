@@ -99,7 +99,9 @@ mount these Git panels and keeps its separate extension-host Git implementation.
 - `getCommitFiles(directory, commitHash)`: Get file changes for a specific commit relative to its first parent, or the empty tree for a root commit. NUL-delimited paths preserve whitespace; renamed files return their destination in `path` and source in `previousPath`.
 - `getCommitDiff(directory, { hash, path, previousPath, contextLines })`: Get the same commit's patch, with optional file filtering and context depth. `previousPath` keeps a rename's old and new paths in the per-file patch. Reads committed objects only, never the working tree. Exposed as `GET /api/git/commit-diff`; an unavailable hash fails rather than returning an empty diff.
 - `getGitHistory(directory, options)`: Graph history pages. Explicit requests require at least one validated ref and remain capped at 32 refs; `{ all: true }` is the only supported all-refs selector and maps to an internally authored `--all` argument instead of enumerating refs.
-- `getCommitFileDiff(directory, hash, filePath, isBinary)`: Get before/after content for a specific file in a commit. Returns `{ original, modified, isBinary }`. Runs `git show <hash>^:<path>` and `git show <hash>:<path>` in parallel; returns empty strings on failure (added/deleted/root-commit edge cases).
+- `getCommitFiles(directory, { commitHash, parentHash })`: Normalized raw commit metadata. `parentHash: null` is valid only for root commits; rename paths, object ids, binary flags, symlink/gitlink kinds, and Git order are retained. The legacy string-hash form remains supported.
+- `getCommitFileDiff(directory, { commitHash, parentHash, originalPath, modifiedPath })`: Reads only requested before/after blob sides. Null sides are authoritative; missing objects fail and combined blob size is capped at 8 MiB.
+- `getCommitFileDiff(directory, hash, filePath, isBinary)`: Legacy positional compatibility form for existing commit walkthrough callers.
 
 ### Merge and Rebase Operations
 - `rebase(directory, options)`: Start a rebase onto a target branch.
