@@ -306,6 +306,10 @@ const browserFaviconFor = (url: string, faviconByOrigin: Record<string, string>)
   }
 };
 
+export const getDiffTabRenderKind = (tab: { commitDiffTarget: unknown }): 'commit' | 'working' => {
+  return tab.commitDiffTarget ? 'commit' : 'working';
+};
+
 // The editor surface's file-tree column: docked on the right, resizable from
 // its left edge, and animated open/closed like the app sidebars. In tree-only
 // mode (`fill`), the panel collapses around this fixed-width, right-aligned column.
@@ -1384,11 +1388,13 @@ export const ContextPanel: React.FC = () => {
               activeTab?.id !== tab.id && 'hidden'
             )}
           >
-            {tab.commitDiffTarget ? (
+            {(() => {
+              const commitDiffTarget = tab.commitDiffTarget;
+              return getDiffTabRenderKind(tab) === 'commit' && commitDiffTarget ? (
               <React.Suspense fallback={null}>
                 <ContextCommitDiffView
                   directory={directoryKey}
-                  target={tab.commitDiffTarget}
+                  target={commitDiffTarget}
                   onClose={() => {
                     if (!directoryKey) {
                       return;
@@ -1397,7 +1403,7 @@ export const ContextPanel: React.FC = () => {
                   }}
                 />
               </React.Suspense>
-            ) : (
+              ) : (
               <React.Suspense fallback={null}>
                 <DiffView
                   visible={isOpen && activeTab?.id === tab.id}
@@ -1411,7 +1417,8 @@ export const ContextPanel: React.FC = () => {
                   flushContent
                 />
               </React.Suspense>
-            )}
+              );
+            })()}
           </div>
         ))}
         {terminalTab ? (
