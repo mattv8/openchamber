@@ -9,6 +9,7 @@ import {
   continueMerge,
   continueRebase,
   createBranch,
+  createGitTag,
   deleteGitBranch,
   deleteRemoteBranch,
   dropGitStash,
@@ -25,7 +26,6 @@ import {
   getGitHistoryRefs,
   getGitStatus,
   getCommitFileDiff,
-  getCommitFiles,
   gitFetch,
   gitPush,
   listGitDirectories,
@@ -142,6 +142,24 @@ test('nested repository discovery scopes the workspace to the requested root', a
 });
 
 describe('gitApiHttp index mutations', () => {
+  test('sends create tag payloads with the commit hash', async () => {
+    installWindowMock();
+    const calls = installFetchMock();
+    try {
+      await createGitTag('/repo', 'v1.2.3', '0123456789abcdef0123456789abcdef01234567');
+
+      expect(calls).toHaveLength(1);
+      expect(String(calls[0].input)).toBe('/api/git/tags?directory=%2Frepo');
+      expect(calls[0].init?.method).toBe('POST');
+      expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+        name: 'v1.2.3',
+        commitHash: '0123456789abcdef0123456789abcdef01234567',
+      });
+    } finally {
+      restoreMocks();
+    }
+  });
+
   test('sends bulk stage payloads as paths', async () => {
     installWindowMock();
     const calls = installFetchMock();
@@ -222,7 +240,7 @@ describe('gitApiHttp branch comparisons', () => {
       expect(urls[0].searchParams.get('path')).toBe(' new\nfile.ts');
       expect(urls[0].searchParams.get('previousPath')).toBe('old.ts');
       expect(urls[0].searchParams.get('context')).toBe('20');
-      await expect(getCommitFiles('/repo', hash)).rejects.toThrow();
+      await expect(getCommitFiles('/repo', { commitHash: hash, parentHash: null })).rejects.toThrow();
       await expect(getGitLog('/repo', { maxCount: 50, to: 'refs/heads/feature' })).rejects.toThrow();
       expect(urls[2].searchParams.get('maxCount')).toBe('50');
       expect(urls[2].searchParams.get('to')).toBe('refs/heads/feature');
@@ -681,7 +699,14 @@ describe('gitApiHttp history requests', () => {
 
   test('accepts object requests for commit file history helpers', async () => {
     installWindowMock();
-    const calls = installFetchMock();
+    const calls: FetchCall[] = [];
+    globalThis.fetch = Object.assign(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ input, init });
+      const url = new URL(String(input), 'http://localhost');
+      return Response.json(url.pathname.endsWith('/commit-files')
+        ? { files: [] }
+        : { status: 'ready', original: '', modified: '' });
+    }, previousFetch);
     try {
       const changesRequest: GitCommitChangesRequest = {
         commitHash: 'abc123',
