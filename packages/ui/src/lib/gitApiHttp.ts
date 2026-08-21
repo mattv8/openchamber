@@ -64,6 +64,19 @@ const gitLogEntrySchema = z.object({
   insertions: z.number(), deletions: z.number(), parents: z.array(z.string()),
 });
 const gitLogSchema = z.object({ all: z.array(gitLogEntrySchema), latest: gitLogEntrySchema.nullable(), total: z.number() });
+const gitCommitFilesSchema = z.object({
+  files: z.array(z.object({
+    path: z.string(),
+    originalPath: z.string().optional(),
+    status: z.enum(['A', 'M', 'D', 'R']),
+    kind: z.enum(['file', 'symlink', 'gitlink']),
+    originalObjectId: z.string().optional(),
+    objectId: z.string().optional(),
+    insertions: z.number(),
+    deletions: z.number(),
+    isBinary: z.boolean(),
+  })),
+});
 
 // Servers before #3586 send no `submodule`; that means "not known to be one".
 const gitPathDiffSchema = z.object({ diff: z.string(), submodule: gitSubmoduleStateSchema.nullable().default(null) });
@@ -1022,6 +1035,23 @@ export async function createBranch(
   return completeStatusMutation(directory, response);
 }
 
+export async function createGitTag(
+  directory: string,
+  name: string,
+  commitHash: string
+): Promise<{ success: boolean; tag: string }> {
+  const response = await runtimeFetch(buildUrl(`${API_BASE}/tags`, directory), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, commitHash }),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(error.error || 'Failed to create tag');
+  }
+  return response.json();
+}
+
 export async function renameBranch(
   directory: string,
   oldName: string,
@@ -1072,7 +1102,7 @@ export async function getCommitFiles(
   if (!response.ok) {
     throw await rangeResponseError(response, 'Failed to get commit files');
   }
-  return response.json();
+  return gitCommitFilesSchema.parse(await response.json());
 }
 
 export async function getCommitFileDiff(
