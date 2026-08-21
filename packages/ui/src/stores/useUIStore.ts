@@ -9,12 +9,12 @@ import type { DraftStarterRef } from '@/lib/draftStarters';
 import { DEFAULT_MONO_FONT, DEFAULT_UI_FONT, type MonoFontOption, type UiFontOption } from '@/lib/fontOptions';
 import type { GitReviewLayout } from '@/lib/getWorkingTreeDiffDestination';
 import { getStoredMobileKeyboardMode, type MobileKeyboardMode } from '@/lib/mobileKeyboardMode';
-import type { LinearIssueListAssignee, LinearIssueListPriority, LinearIssueListStatus, TerminalShell } from '@/lib/api/types';
+import { getRuntimeKey, isTransientRuntimeKey } from '@/lib/runtime-switch';
+import type { GitCommitChangedFile, LinearIssueListAssignee, LinearIssueListPriority, LinearIssueListStatus, TerminalShell } from '@/lib/api/types';
 import type { ProjectRef } from '@/lib/projectContextApi';
 import { useFilesViewTabsStore } from './useFilesViewTabsStore';
 import { isWindowsArm64 } from '@/lib/platform';
 import { isVSCodeRuntime } from '@/lib/desktop';
-import { getRuntimeKey, isTransientRuntimeKey } from '@/lib/runtime-switch';
 
 export type PendingDiffScope = 'working' | 'staged' | 'turn' | 'branch';
 export type ContextPanelMode = 'diff' | 'walkthrough' | 'file' | 'context' | 'plan' | 'chat' | 'browser' | 'git' | 'pr' | 'linear' | 'notes' | 'terminal';
@@ -40,6 +40,11 @@ export const normalizeLargeTextPasteBehavior = (value: unknown): LargeTextPasteB
 };
 
 export type GitGraphFilterMode = 'auto' | 'all' | 'manual';
+export type GitCommitDiffTarget = {
+  commitHash: string;
+  parentHash: string | null;
+  file: GitCommitChangedFile;
+};
 
 export type GitRepositoryPaneState = {
   changesCollapsed: boolean;
@@ -121,6 +126,7 @@ type ContextPanelTab = {
   id: string;
   mode: ContextPanelMode;
   targetPath: string | null;
+  commitDiffTarget: GitCommitDiffTarget | null;
   /** Saved project plan this tab shows, for `plan` tabs opened from the notes
       panel. Project plans are addressed by id because their markdown is
       server-owned and has no client-visible path. */
@@ -141,6 +147,7 @@ type ContextPanelTab = {
 type ContextPanelTabDescriptor = {
   mode: ContextPanelMode;
   targetPath?: string | null;
+  commitDiffTarget?: GitCommitDiffTarget | null;
   projectPlanId?: string | null;
   projectPlanRef?: ProjectRef | null;
   dedupeKey?: string | null;
@@ -215,6 +222,7 @@ const isLegacyDefaultTemplates = (value: unknown): boolean => {
 const CONTEXT_PANEL_DEFAULT_WIDTH = 380;
 const CONTEXT_PANEL_MIN_WIDTH = 380;
 const CONTEXT_PANEL_MAX_WIDTH = 1400;
+const GIT_OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 /** Per surface, not per panel: see clampContextPanelTabs. */
 const CONTEXT_PANEL_MAX_TABS = 12;
 const CONTEXT_PANEL_MAX_LABEL_LENGTH = 120;
@@ -338,6 +346,126 @@ const normalizeContextTargetPath = (value: string | null | undefined): string | 
   return trimmed.replace(/\\/g, '/');
 };
 
+const normalizeGitObjectId = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return GIT_OBJECT_ID_PATTERN.test(trimmed) ? trimmed : null;
+};
+
+const normalizeGitCommitChangedFile = (value: unknown): GitCommitChangedFile | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const candidate = value as {
+    path?: unknown;
+    originalPath?: unknown;
+    status?: unknown;
+    kind?: unknown;
+    originalObjectId?: unknown;
+    objectId?: unknown;
+    insertions?: unknown;
+    deletions?: unknown;
+    isBinary?: unknown;
+  };
+
+  const path = normalizeContextTargetPath(candidate.path as string | null | undefined);
+  if (path === null) {
+    return null;
+  }
+
+  if (candidate.status !== 'A' && candidate.status !== 'M' && candidate.status !== 'D' && candidate.status !== 'R') {
+    return null;
+  }
+
+  if (candidate.kind !== 'file' && candidate.kind !== 'symlink' && candidate.kind !== 'gitlink') {
+    return null;
+  }
+
+  if (typeof candidate.insertions !== 'number' || !Number.isFinite(candidate.insertions) || candidate.insertions < 0) {
+    return null;
+  }
+
+  if (typeof candidate.deletions !== 'number' || !Number.isFinite(candidate.deletions) || candidate.deletions < 0) {
+    return null;
+  }
+
+  if (typeof candidate.isBinary !== 'boolean') {
+    return null;
+  }
+
+  const originalPath = candidate.originalPath === undefined
+    ? undefined
+    : normalizeContextTargetPath(candidate.originalPath as string | null | undefined);
+  if (candidate.originalPath !== undefined && originalPath === null) {
+    return null;
+  }
+
+  const originalObjectId = candidate.originalObjectId === undefined
+    ? undefined
+    : normalizeGitObjectId(candidate.originalObjectId);
+  if (candidate.originalObjectId !== undefined && originalObjectId === null) {
+    return null;
+  }
+
+  const objectId = candidate.objectId === undefined
+    ? undefined
+    : normalizeGitObjectId(candidate.objectId);
+  if (candidate.objectId !== undefined && objectId === null) {
+    return null;
+  }
+
+  return {
+    path,
+    ...(originalPath ? { originalPath } : {}),
+    status: candidate.status,
+    kind: candidate.kind,
+    ...(originalObjectId ? { originalObjectId } : {}),
+    ...(objectId ? { objectId } : {}),
+    insertions: candidate.insertions,
+    deletions: candidate.deletions,
+    isBinary: candidate.isBinary,
+  };
+};
+
+const normalizeGitCommitDiffTarget = (value: unknown): GitCommitDiffTarget | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const candidate = value as {
+    commitHash?: unknown;
+    parentHash?: unknown;
+    file?: unknown;
+  };
+
+  const commitHash = normalizeGitObjectId(candidate.commitHash);
+  if (commitHash === null) {
+    return null;
+  }
+
+  const parentHash = candidate.parentHash == null
+    ? null
+    : normalizeGitObjectId(candidate.parentHash);
+  if (candidate.parentHash != null && parentHash === null) {
+    return null;
+  }
+
+  const file = normalizeGitCommitChangedFile(candidate.file);
+  if (file === null) {
+    return null;
+  }
+
+  return {
+    commitHash,
+    parentHash,
+    file,
+  };
+};
+
 const normalizeContextTabLabel = (value: string | null | undefined): string | null => {
   if (typeof value !== 'string') {
     return null;
@@ -415,6 +543,7 @@ const createContextPanelTab = (descriptor: ContextPanelTabDescriptor): ContextPa
     id: buildContextPanelTabID(descriptor.mode, dedupeKey),
     mode: descriptor.mode,
     targetPath: normalizedTargetPath,
+    commitDiffTarget: normalizeGitCommitDiffTarget(descriptor.commitDiffTarget),
     projectPlanId: typeof descriptor.projectPlanId === 'string' && descriptor.projectPlanId.trim()
       ? descriptor.projectPlanId.trim()
       : null,
@@ -478,6 +607,7 @@ const sanitizeContextPanelTabs = (tabs: unknown): ContextPanelTab[] => {
     const candidate = entry as {
       mode?: unknown;
       targetPath?: unknown;
+      commitDiffTarget?: unknown;
       projectPlanId?: unknown;
       projectPlanRef?: unknown;
       dedupeKey?: unknown;
@@ -507,6 +637,7 @@ const sanitizeContextPanelTabs = (tabs: unknown): ContextPanelTab[] => {
       ? candidate.projectPlanId.trim()
       : null;
     const projectPlanRef = normalizeContextPanelProjectPlanRef(candidate.projectPlanRef);
+    const normalizedCommitDiffTarget = normalizeGitCommitDiffTarget(candidate.commitDiffTarget);
     // `mode: 'plan'` covers two documents: a saved Project knowledge plan
     // (needs both the plan id and its owning project) and a plain session
     // filesystem plan (has neither). Only the half-identified form — id
@@ -533,6 +664,7 @@ const sanitizeContextPanelTabs = (tabs: unknown): ContextPanelTab[] => {
       targetPath,
       projectPlanId,
       projectPlanRef,
+      commitDiffTarget: normalizedCommitDiffTarget,
       dedupeKey,
       label: normalizeContextTabLabel(typeof candidate.label === 'string' ? candidate.label : null),
       sessionTitleFallback: normalizeContextTabLabel(typeof candidate.sessionTitleFallback === 'string' ? candidate.sessionTitleFallback : null),
@@ -602,6 +734,7 @@ const upsertContextPanelTab = (
            ...tab,
            mode: nextTab.mode,
            targetPath: nextTab.targetPath || tab.targetPath,
+           commitDiffTarget: nextTab.commitDiffTarget ?? tab.commitDiffTarget,
            projectPlanId: nextTab.projectPlanId ?? tab.projectPlanId,
            projectPlanRef: nextTab.projectPlanRef ?? tab.projectPlanRef,
            dedupeKey: nextTab.dedupeKey,
@@ -1038,9 +1171,11 @@ interface UIStore {
   openContextSurface: (directory: string, mode: ContextPanelMode) => void;
   openContextPanelTab: (directory: string, tab: ContextPanelTabDescriptor, options?: { reveal?: boolean }) => void;
   openContextDiff: (directory: string, filePath: string, staged?: boolean, scope?: PendingDiffScope | null) => void;
+  openContextCommitDiff: (directory: string, target: GitCommitDiffTarget) => void;
   openContextFile: (directory: string, filePath: string) => void;
   openContextFileAtLine: (directory: string, filePath: string, line: number, column?: number) => void;
   openContextOverview: (directory: string) => void;
+  openContextPlan: (directory: string) => void;
   openContextPreview: (directory: string, url: string) => void;
   openContextBrowser: (directory: string, url?: string, options?: { reveal?: boolean }) => void;
   openNewContextBrowserTab: (directory: string) => void;
@@ -1529,6 +1664,20 @@ export const useUIStore = create<UIStore>()(
           });
         },
 
+        openContextCommitDiff: (directory, target) => {
+          const normalizedDirectory = normalizeDirectoryPath((directory || '').trim());
+          const normalizedTarget = normalizeGitCommitDiffTarget(target);
+          if (!normalizedDirectory || normalizedTarget === null) {
+            return;
+          }
+
+          get().openContextPanelTab(normalizedDirectory, {
+            mode: 'diff',
+            targetPath: normalizedTarget.file.path,
+            commitDiffTarget: normalizedTarget,
+          });
+        },
+
         openContextFile: (directory, filePath) => {
           const normalizedDirectory = normalizeDirectoryPath((directory || '').trim());
           const normalizedFilePath = normalizeContextTargetPath(filePath);
@@ -1566,6 +1715,15 @@ export const useUIStore = create<UIStore>()(
           }
 
           get().openContextPanelTab(normalizedDirectory, { mode: 'context' });
+        },
+
+        openContextPlan: (directory) => {
+          const normalizedDirectory = normalizeDirectoryPath((directory || '').trim());
+          if (!normalizedDirectory) {
+            return;
+          }
+
+          get().openContextPanelTab(normalizedDirectory, { mode: 'plan' });
         },
 
         openContextPreview: (directory, url) => {
@@ -2993,6 +3151,10 @@ export const useUIStore = create<UIStore>()(
           state.linearIssueListPriority = sanitizeLinearIssueListPriority(state.linearIssueListPriority);
           if (state.gitReviewLayout !== 'separate' && state.gitReviewLayout !== 'combined') {
             state.gitReviewLayout = 'separate';
+          }
+
+          if (version < 17) {
+            state.contextPanelByDirectory = sanitizeContextPanelByDirectory(state.contextPanelByDirectory);
           }
 
           state.fileEditorKeymap = normalizeFileEditorKeymap(state.fileEditorKeymap);
