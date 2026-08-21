@@ -4,32 +4,48 @@ import type { GitCommitDiffTarget } from '@/stores/useUIStore';
 import { GitCommitDiffPreview } from './GitCommitDiffPreview';
 import {
   createGitCommitDetailsController,
+  scheduleGitCommitDetailsIdle,
   type GitCommitComparison,
   type GitCommitDetailsController,
 } from './gitCommitDetailsController';
-
-const scheduleGitCommitDetailsIdle = (callback: () => void) => {
-  if ('requestIdleCallback' in globalThis && 'cancelIdleCallback' in globalThis) {
-    const handle = globalThis.requestIdleCallback(callback);
-    return () => globalThis.cancelIdleCallback(handle);
-  }
-
-  const handle = globalThis.setTimeout(callback, 0);
-  return () => globalThis.clearTimeout(handle);
-};
 
 export interface ContextCommitDiffViewProps {
   directory: string;
   target: GitCommitDiffTarget;
   onClose: () => void;
+  createController?: typeof createGitCommitDetailsController;
 }
+
+const createContextCommitFileKey = (target: GitCommitDiffTarget): string => JSON.stringify([
+  target.file.path,
+  target.file.originalPath ?? null,
+  target.file.status,
+  target.file.kind,
+  target.file.originalObjectId ?? null,
+  target.file.objectId ?? null,
+  target.file.insertions,
+  target.file.deletions,
+  target.file.isBinary,
+]);
 
 export const ContextCommitDiffView: React.FC<ContextCommitDiffViewProps> = ({
   directory,
   target,
   onClose,
+  createController = createGitCommitDetailsController,
 }) => {
   const { git } = useRuntimeAPIs();
+  const fileKey = React.useMemo(() => createContextCommitFileKey(target), [
+    target.file.deletions,
+    target.file.insertions,
+    target.file.isBinary,
+    target.file.kind,
+    target.file.objectId,
+    target.file.originalObjectId,
+    target.file.originalPath,
+    target.file.path,
+    target.file.status,
+  ]);
 
   const comparison = React.useMemo<GitCommitComparison>(() => ({
     directory,
@@ -37,18 +53,23 @@ export const ContextCommitDiffView: React.FC<ContextCommitDiffViewProps> = ({
     parentHash: target.parentHash,
   }), [directory, target.commitHash, target.parentHash]);
 
-  const controller = React.useMemo(() => createGitCommitDetailsController({
+  const file = React.useMemo(() => ({ ...target.file }), [fileKey]);
+
+  const controller = React.useMemo(() => createController({
     directory,
     git,
     scheduleIdle: scheduleGitCommitDetailsIdle,
-  }), [directory, git, target]);
+  }), [createController, directory, git]);
 
   React.useEffect(() => {
-    controller.selectFile(comparison, target.file);
     return () => {
       controller.dispose();
     };
-  }, [comparison, controller, target.file]);
+  }, [controller]);
+
+  React.useEffect(() => {
+    controller.selectFile(comparison, file);
+  }, [comparison, controller, file]);
 
   const previewController = React.useMemo<GitCommitDetailsController>(() => ({
     ...controller,
