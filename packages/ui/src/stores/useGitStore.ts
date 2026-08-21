@@ -103,7 +103,7 @@ interface GitStore {
   fetchLog: (directory: string, git: GitAPI, maxCount?: number) => Promise<void>;
   fetchIdentity: (directory: string, git: GitAPI) => Promise<void>;
   fetchAll: (directory: string, git: GitAPI, options?: { force?: boolean; silentIfCached?: boolean }) => Promise<void>;
-  ensureHistoryRefs: (directory: string, git: GitAPI) => Promise<GitHistoryRefsResponse | null>;
+  ensureHistoryRefs: (directory: string, git: GitAPI, options?: { force?: boolean }) => Promise<GitHistoryRefsResponse | null>;
   fetchHistoryPage: (
     directory: string,
     git: GitAPI,
@@ -815,10 +815,15 @@ export const useGitStore = create<GitStore>()(
         return history?.queries.get(getHistoryQueryKey(query)) ?? null;
       },
 
-      ensureHistoryRefs: async (directory, git) => {
+      ensureHistoryRefs: async (directory, git, options = {}) => {
         const getGitHistoryRefs = git.getGitHistoryRefs;
         if (!getGitHistoryRefs) {
           return null;
+        }
+
+        const cached = get().directories.get(directory)?.history.refs;
+        if (cached && !options.force) {
+          return cached;
         }
 
         const inFlightKey = runtimeDirectoryKey(getRuntimeKey(), directory);
