@@ -1157,12 +1157,12 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                 sessionId: btwSessionId,
                 directory: btwDirectory,
             };
-        } else if (capturedTarget || capturedDraftSnapshot || delivery || historySubmissions.length > 0) {
+        } else if (capturedTarget || capturedDraftSnapshot || delivery || historySubmissions?.length) {
             sendMessageOptions = {};
             if (capturedTarget) sendMessageOptions.target = capturedTarget;
             if (capturedDraftSnapshot) sendMessageOptions.draftSnapshot = capturedDraftSnapshot;
         }
-        if (historySubmissions.length > 0 && sendMessageOptions) {
+        if (historySubmissions?.length && sendMessageOptions) {
             sendMessageOptions.historySubmissions = historySubmissions;
         }
         if (delivery && sendMessageOptions) sendMessageOptions.delivery = delivery;

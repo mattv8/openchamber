@@ -7,7 +7,6 @@ import {
   type InputHistoryScope,
 } from '@/lib/inputHistoryScope';
 import { normalizePath } from '@/lib/pathNormalization';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 import type { AttachedFile } from '@/stores/types/sessionTypes';
 
 export type InputHistoryIdentity = {
@@ -95,13 +94,12 @@ const getDurableStorage = (): Storage | null => {
 };
 
 const readPersistedValue = (): string | null => {
-  if (inMemoryStorageValue !== null) return inMemoryStorageValue;
   const storage = getDurableStorage();
-  if (!storage) return null;
+  if (!storage) return inMemoryStorageValue;
   try {
-    return storage.getItem(STORAGE_KEY);
+    return storage.getItem(STORAGE_KEY) ?? inMemoryStorageValue;
   } catch {
-    return null;
+    return inMemoryStorageValue;
   }
 };
 
@@ -415,18 +413,18 @@ const appendToNamespace = (
 };
 
 const initialSnapshot = writeSnapshot(readSnapshot());
-void getRuntimeKey();
 
 export const useInputHistoryStore = create<InputHistoryStoreState>((set) => ({
   ...initialSnapshot,
   applyScope: (scope) => {
     if (!isInputHistoryScope(scope)) return;
     set((state) => {
-      if (state.scope === scope) return state;
+      const latest = readSnapshot();
+      if (latest.scope === scope) return { ...state, ...latest };
       const nextSnapshot = writeSnapshot({
         scope,
-        globalBuckets: state.globalBuckets,
-        sessionBuckets: state.sessionBuckets,
+        globalBuckets: latest.globalBuckets,
+        sessionBuckets: latest.sessionBuckets,
       });
       return { ...state, ...nextSnapshot };
     });
@@ -434,18 +432,19 @@ export const useInputHistoryStore = create<InputHistoryStoreState>((set) => ({
   appendSubmissions: (identity, submissions) => {
     if (submissions.length === 0) return;
     set((state) => {
+      const latest = readSnapshot();
       const touchedAt = getNextTimestamp();
       const globalKey = createGlobalBucketKey(identity.runtimeKey);
       const sessionKey = createSessionBucketKey(identity.runtimeKey, identity.directory, identity.sessionId);
       const nextSnapshot = writeSnapshot({
-        scope: state.scope,
+        scope: latest.scope,
         globalBuckets: {
-          ...state.globalBuckets,
-          [globalKey]: appendToNamespace(state.globalBuckets[globalKey], submissions, touchedAt),
+          ...latest.globalBuckets,
+          [globalKey]: appendToNamespace(latest.globalBuckets[globalKey], submissions, touchedAt),
         },
         sessionBuckets: {
-          ...state.sessionBuckets,
-          [sessionKey]: appendToNamespace(state.sessionBuckets[sessionKey], submissions, touchedAt),
+          ...latest.sessionBuckets,
+          [sessionKey]: appendToNamespace(latest.sessionBuckets[sessionKey], submissions, touchedAt),
         },
       });
       return { ...state, ...nextSnapshot };
@@ -453,13 +452,14 @@ export const useInputHistoryStore = create<InputHistoryStoreState>((set) => ({
   },
   clearSession: (identity) => {
     set((state) => {
+      const latest = readSnapshot();
       const sessionKey = createSessionBucketKey(identity.runtimeKey, identity.directory, identity.sessionId);
-      if (!(sessionKey in state.sessionBuckets)) return state;
-      const sessionBuckets = { ...state.sessionBuckets };
+      if (!(sessionKey in latest.sessionBuckets)) return { ...state, ...latest };
+      const sessionBuckets = { ...latest.sessionBuckets };
       delete sessionBuckets[sessionKey];
       const nextSnapshot = writeSnapshot({
-        scope: state.scope,
-        globalBuckets: state.globalBuckets,
+        scope: latest.scope,
+        globalBuckets: latest.globalBuckets,
         sessionBuckets,
       });
       return { ...state, ...nextSnapshot };

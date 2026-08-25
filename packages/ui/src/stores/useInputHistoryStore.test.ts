@@ -453,4 +453,91 @@ describe('useInputHistoryStore', () => {
       'retained',
     ]);
   });
+
+  test('stale tab append preserves history written by another tab', async () => {
+    const localStorage = createFakeStorage();
+    installWindow(localStorage);
+    const tabA = await importStoreModule();
+    const tabB = await importStoreModule();
+    const first = tabA.createInputHistoryIdentity('runtime-a', '/repo', 'session-a');
+    const second = tabB.createInputHistoryIdentity('runtime-a', '/repo', 'session-b');
+    if (!first || !second) throw new Error('identity missing');
+
+    tabA.useInputHistoryStore.getState().appendSubmissions(first, [
+      tabA.createInputHistorySubmission('from A', []),
+    ]);
+    tabB.useInputHistoryStore.getState().appendSubmissions(second, [
+      tabB.createInputHistorySubmission('from B', []),
+    ]);
+
+    const observer = await importStoreModule();
+    observer.useInputHistoryStore.getState().applyScope('global');
+    expect(observer.selectInputHistoryEntries(observer.useInputHistoryStore.getState(), first).map((entry) => entry.text)).toEqual([
+      'from A',
+      'from B',
+    ]);
+    observer.useInputHistoryStore.getState().applyScope('session');
+    expect(observer.selectInputHistoryEntries(observer.useInputHistoryStore.getState(), first).map((entry) => entry.text)).toEqual(['from A']);
+    expect(observer.selectInputHistoryEntries(observer.useInputHistoryStore.getState(), second).map((entry) => entry.text)).toEqual(['from B']);
+  });
+
+  test('stale tab scope change preserves newer history buckets', async () => {
+    const localStorage = createFakeStorage();
+    installWindow(localStorage);
+    const tabA = await importStoreModule();
+    const first = tabA.createInputHistoryIdentity('runtime-a', '/repo', 'session-a');
+    if (!first) throw new Error('identity missing');
+    tabA.useInputHistoryStore.getState().appendSubmissions(first, [
+      tabA.createInputHistorySubmission('from A', []),
+    ]);
+
+    const tabB = await importStoreModule();
+    const second = tabB.createInputHistoryIdentity('runtime-a', '/repo', 'session-b');
+    if (!second) throw new Error('identity missing');
+    tabB.useInputHistoryStore.getState().appendSubmissions(second, [
+      tabB.createInputHistorySubmission('from B', []),
+    ]);
+
+    tabA.useInputHistoryStore.getState().applyScope('session');
+
+    const observer = await importStoreModule();
+    expect(observer.useInputHistoryStore.getState().scope).toBe('session');
+    observer.useInputHistoryStore.getState().applyScope('global');
+    expect(observer.selectInputHistoryEntries(observer.useInputHistoryStore.getState(), first).map((entry) => entry.text)).toEqual([
+      'from A',
+      'from B',
+    ]);
+    observer.useInputHistoryStore.getState().applyScope('session');
+    expect(observer.selectInputHistoryEntries(observer.useInputHistoryStore.getState(), second).map((entry) => entry.text)).toEqual(['from B']);
+  });
+
+  test('stale tab cleanup deletes only its target from newer history', async () => {
+    const localStorage = createFakeStorage();
+    installWindow(localStorage);
+    const tabA = await importStoreModule();
+    const deleted = tabA.createInputHistoryIdentity('runtime-a', '/repo', 'session-a');
+    if (!deleted) throw new Error('identity missing');
+    tabA.useInputHistoryStore.getState().appendSubmissions(deleted, [
+      tabA.createInputHistorySubmission('deleted', []),
+    ]);
+
+    const tabB = await importStoreModule();
+    const retained = tabB.createInputHistoryIdentity('runtime-a', '/repo', 'session-b');
+    if (!retained) throw new Error('identity missing');
+    tabB.useInputHistoryStore.getState().appendSubmissions(retained, [
+      tabB.createInputHistorySubmission('retained', []),
+    ]);
+
+    tabA.useInputHistoryStore.getState().clearSession(deleted);
+
+    const observer = await importStoreModule();
+    observer.useInputHistoryStore.getState().applyScope('session');
+    expect(observer.selectInputHistoryEntries(observer.useInputHistoryStore.getState(), deleted)).toEqual([]);
+    expect(observer.selectInputHistoryEntries(observer.useInputHistoryStore.getState(), retained).map((entry) => entry.text)).toEqual(['retained']);
+    observer.useInputHistoryStore.getState().applyScope('global');
+    expect(observer.selectInputHistoryEntries(observer.useInputHistoryStore.getState(), deleted).map((entry) => entry.text)).toEqual([
+      'deleted',
+      'retained',
+    ]);
+  });
 });

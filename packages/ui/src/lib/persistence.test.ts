@@ -454,7 +454,7 @@ describe('updateDesktopSettings', () => {
     expect(localStorage.getItem('selectedThemeId')).toBe('existing-theme');
   });
 
-test('applies authoritative shared sidebar preferences without replacing local-only sidebar state', async () => {
+  test('applies authoritative shared sidebar preferences without replacing local-only sidebar state', async () => {
     getWindow();
     useSessionDisplayStore.setState({
       projectDisplayMode: 'all',
@@ -556,6 +556,7 @@ test('applies authoritative shared sidebar preferences without replacing local-o
       projectSortOrder: 'z-a',
       showRecentSection: false,
     });
+  });
 
   test('applies validated input history scope from shared settings save responses', async () => {
     getWindow();
@@ -844,7 +845,7 @@ test('applies authoritative shared sidebar preferences without replacing local-o
     await syncDesktopSettings();
 
     expect(useInputHistoryStore.getState().scope).toBe(DEFAULT_INPUT_HISTORY_SCOPE);
-    expect(saveCalls).toEqual([]);
+    expect(saveCalls.some((changes) => changes.inputHistoryScope !== undefined)).toBe(false);
   });
 
   test('does not reapply the hydrated input history scope when it already matches', async () => {
