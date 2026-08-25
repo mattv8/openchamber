@@ -88,6 +88,7 @@ export function registerGitRoutes(app) {
       .join('\n');
   };
 
+  const NON_REPOSITORY_ERROR = 'Directory does not appear to be a git repository';
   const isNonRepoGitError = (error) => /not a git repository/i.test(extractGitErrorText(error));
 
   const nonRepoStatusPayload = () => ({
@@ -363,6 +364,9 @@ export function registerGitRoutes(app) {
       }
       res.json(await getGitHistoryRefs(directory));
     } catch (error) {
+      if (isNonRepoGitError(error)) {
+        return res.status(400).json({ error: NON_REPOSITORY_ERROR });
+      }
       console.error('Failed to get git history refs:', error);
       res.status(error?.statusCode || 500).json({ error: error.message || 'Failed to get git history refs' });
     }
