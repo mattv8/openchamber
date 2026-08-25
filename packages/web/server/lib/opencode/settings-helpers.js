@@ -2,7 +2,7 @@ import { isAgentMemoryFeatureAvailable } from '../agent-memory/feature-flag.js';
 import {
   DEFAULT_INPUT_HISTORY_SCOPE,
   isInputHistoryScope,
-} from '../../../../ui/src/lib/inputHistoryScope.ts';
+} from './input-history-scope.js';
 
 export const createSettingsHelpers = (dependencies) => {
   const {

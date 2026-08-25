@@ -1,7 +1,15 @@
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { createSettingsHelpers } from './settings-helpers.js';
 import { createSettingsNormalizationRuntime } from './settings-normalization-runtime.js';
+
+const testFilePath = fileURLToPath(import.meta.url);
+const packagesWebDir = join(dirname(testFilePath), '..', '..', '..');
 
 const createTestHelpers = () => createSettingsHelpers({
   normalizePathForPersistence: (value) => value,
@@ -58,6 +66,62 @@ const createTestHelpersWithRealSanitizers = () => {
 };
 
 describe('settings helpers', () => {
+  it('imports from the packed @openchamber/web tarball without escaping the published package', async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'settings-helpers-pack-'));
+    const packDir = join(tempRoot, 'pack');
+    const extractDir = join(tempRoot, 'extract');
+
+    try {
+      mkdirSync(packDir);
+      mkdirSync(extractDir);
+      execFileSync('npm', ['pack', '--silent', '--pack-destination', packDir], {
+        cwd: packagesWebDir,
+        stdio: 'pipe',
+      });
+
+      const tarballName = readdirSync(packDir).find((entry) => entry.endsWith('.tgz'));
+      expect(tarballName).toBeTruthy();
+
+      execFileSync('tar', ['-xzf', join(packDir, tarballName), '-C', extractDir], {
+        stdio: 'pipe',
+      });
+
+      const extractedModule = await import(
+        pathToFileURL(join(extractDir, 'package', 'server', 'lib', 'opencode', 'settings-helpers.js')).href
+      );
+
+      const helpers = extractedModule.createSettingsHelpers({
+        normalizePathForPersistence: (value) => value,
+        normalizeDirectoryPath: (value) => value,
+        normalizeTunnelBootstrapTtlMs: (value) => value,
+        normalizeTunnelSessionTtlMs: (value) => value,
+        normalizeTunnelProvider: (value) => value,
+        normalizeTunnelMode: (value) => value,
+        normalizeOptionalPath: (value) => value,
+        normalizeManagedRemoteTunnelHostname: (value) => value,
+        normalizeManagedRemoteTunnelPresets: () => undefined,
+        normalizeManagedRemoteTunnelPresetTokens: () => undefined,
+        sanitizeTypographySizesPartial: () => undefined,
+        normalizeStringArray: (input) => input,
+        sanitizeModelRefs: () => undefined,
+        sanitizeSkillCatalogs: () => undefined,
+        sanitizeProjects: () => undefined,
+      });
+
+      expect(helpers.sanitizeSettingsUpdate({ inputHistoryScope: 'global' })).toEqual({
+        inputHistoryScope: 'global',
+      });
+      expect(helpers.sanitizeSettingsUpdate({ inputHistoryScope: 'session' })).toEqual({
+        inputHistoryScope: 'session',
+      });
+      expect(helpers.formatSettingsResponse({})).toMatchObject({
+        inputHistoryScope: 'global',
+      });
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it('accepts only booleans for draft starter visibility', () => {
     const helpers = createTestHelpers();
 
