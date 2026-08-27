@@ -37,6 +37,12 @@ export const EnterKeyToggle = React.memo(function EnterKeyToggle(props: EnterKey
                     onMouseDown={(event) => {
                         event.preventDefault();
                     }}
+                    onPointerDownCapture={(event) => {
+                        if (event.pointerType === 'touch') {
+                            event.preventDefault();
+                            event.stopPropagation();
+                        }
+                    }}
                     onClick={onToggle}
                     aria-label={t(enterToSend
                         ? 'chat.chatInput.actions.enterToSend'
