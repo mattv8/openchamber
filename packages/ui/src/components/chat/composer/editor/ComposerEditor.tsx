@@ -320,8 +320,8 @@ export const ComposerEditor = React.forwardRef<ComposerEditorHandle, ComposerEdi
             // instead of arriving as a plain Enter that "sends" where Enter
             // sends. Without it, Shift+Enter on iOS/Android submits the
             // message instead of inserting a newline. Ctrl/Cmd+Enter gets the
-            // same treatment so a hardware-keyboard policy can tell it apart
-            // from a plain Enter on Chrome Android. The listener lives on
+            // same treatment so the enter-key policy can tell it apart from a
+            // plain Enter. The listener lives on
             // the kept-alive view's contentDOM, so it stays across mounts and
             // keeps feeding the same ref the `interceptKeys` closure reads.
             const trackRealEnterMods = (event: KeyboardEvent) => {
