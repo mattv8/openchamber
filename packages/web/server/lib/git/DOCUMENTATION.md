@@ -206,6 +206,28 @@ The following functions are internal helpers used by exported functions:
 - `latest`: Latest commit object or null.
 - `total`: Total number of commits.
 
+### Git history route errors
+- `GET /api/git/history` returns history service errors as `{ error: string, code?: string }` with the service status code.
+- Stale history cursors return `409` with `{ error: 'stale cursor', code: 'stale_git_history_cursor' }` so HTTP runtimes can restart pagination from page one.
+- Other history failures omit `code` unless the Git service provided one.
+
+### Commit File Metadata Response
+- `files`: Array in Git diff order.
+- Each file entry contains:
+  - `path`: destination path.
+  - `originalPath`: source path for renames only.
+  - `status`: `A`, `M`, `D`, or `R`. Type changes (`T`) normalize to `M`.
+  - `kind`: `file`, `symlink`, or `gitlink`, derived from raw modes (`120000` and `160000`).
+  - `originalObjectId` / `objectId`: omitted on null sides (adds/deletes).
+  - `insertions` / `deletions`: line counts, or `0/0` for binary files, symlinks, and gitlinks.
+  - `isBinary`: true only for regular files with `-/-` numstat output.
+
+### Commit File Preview Route Contract
+- `GET /api/git/commit-files` expects `directory`, `commitHash`, and `parentHash` query fields.
+- `GET /api/git/commit-file-diff` expects `directory`, `commitHash`, `parentHash`, `originalPath`, and `modifiedPath` query fields.
+- Web/Electron HTTP adapters serialize `null` parent/path values as the explicit root marker `__ROOT__`; routes decode that marker back to `null`.
+- Web routes require full 40-character SHA-1 or 64-character SHA-256 commit hashes. Abbreviated SHAs are rejected at the route boundary.
+
 ## Notes for Contributors
 
 ### Adding a New Git Operation
