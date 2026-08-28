@@ -1,6 +1,7 @@
 export function registerGitRoutes(app, { emitWorktreeChanged } = {}) {
   let gitLibraries = null;
   const ROOT_QUERY_MARKER = '__ROOT__';
+  const COMMIT_ISH_PATTERN = /^[0-9a-f]{7,64}$/i;
   const FULL_GIT_OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
   const readSingleQueryString = (value) => {
     const raw = Array.isArray(value) ? value[0] : value;
@@ -1180,7 +1181,7 @@ export function registerGitRoutes(app, { emitWorktreeChanged } = {}) {
         return res.status(400).json({ error: 'directory parameter is required' });
       }
       const { hash } = req.body;
-      if (!req.body.hash || typeof req.body.hash !== 'string' || !/^[0-9a-fA-F]{7,40}$/.test(req.body.hash)) {
+      if (!req.body.hash || typeof req.body.hash !== 'string' || !COMMIT_ISH_PATTERN.test(req.body.hash)) {
         return res.status(400).json({ error: 'Invalid commit hash' });
       }
       const result = await checkoutCommit(directory, hash);
@@ -1199,7 +1200,7 @@ export function registerGitRoutes(app, { emitWorktreeChanged } = {}) {
         return res.status(400).json({ error: 'directory parameter is required' });
       }
       const { hash } = req.body;
-      if (!req.body.hash || typeof req.body.hash !== 'string' || !/^[0-9a-fA-F]{7,40}$/.test(req.body.hash)) {
+      if (!req.body.hash || typeof req.body.hash !== 'string' || !COMMIT_ISH_PATTERN.test(req.body.hash)) {
         return res.status(400).json({ error: 'Invalid commit hash' });
       }
       const result = await cherryPick(directory, hash);
@@ -1218,7 +1219,7 @@ export function registerGitRoutes(app, { emitWorktreeChanged } = {}) {
         return res.status(400).json({ error: 'directory parameter is required' });
       }
       const { hash } = req.body;
-      if (!req.body.hash || typeof req.body.hash !== 'string' || !/^[0-9a-fA-F]{7,40}$/.test(req.body.hash)) {
+      if (!req.body.hash || typeof req.body.hash !== 'string' || !COMMIT_ISH_PATTERN.test(req.body.hash)) {
         return res.status(400).json({ error: 'Invalid commit hash' });
       }
       const result = await revertCommit(directory, hash);
@@ -1237,7 +1238,7 @@ export function registerGitRoutes(app, { emitWorktreeChanged } = {}) {
         return res.status(400).json({ error: 'directory parameter is required' });
       }
       const { hash, mode, force } = req.body;
-      if (!req.body.hash || typeof req.body.hash !== 'string' || !/^[0-9a-fA-F]{7,40}$/.test(req.body.hash)) {
+      if (!req.body.hash || typeof req.body.hash !== 'string' || !COMMIT_ISH_PATTERN.test(req.body.hash)) {
         return res.status(400).json({ error: 'Invalid commit hash' });
       }
       if (!['soft', 'mixed', 'hard'].includes(mode)) {
