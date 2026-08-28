@@ -61,7 +61,6 @@ import { isVSCodeRuntime } from '@/lib/desktop';
 import { useTabletLayout } from '@/lib/device';
 import { useHardwareKeyboard } from '@/lib/hardwareKeyboard';
 import { isIMECompositionEvent } from '@/lib/ime';
-import { updateDesktopSettings } from '@/lib/persistence';
 import { getCycledPrimaryAgentName, type MobileControlsPanel } from './mobileControlsUtils';
 import { MobileOverlayPanel } from '@/components/ui/MobileOverlayPanel';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
@@ -419,7 +418,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     const isMobile = useUIStore((state) => state.isMobile);
     const hasHardwareKeyboard = useHardwareKeyboard();
     const enterToSend = useUIStore((state) => state.enterToSend);
-    const setEnterToSend = useUIStore((state) => state.setEnterToSend);
     const { enabled: isTabletLayout } = useTabletLayout();
     const setImagePreviewOpen = useUIStore((state) => state.setImagePreviewOpen);
     const inputBarOffset = useUIStore((state) => state.inputBarOffset);
@@ -966,12 +964,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     const handleToggleExpandedInput = React.useCallback(() => {
         setExpandedInput(!isExpandedInput);
     }, [isExpandedInput, setExpandedInput]);
-
-    const handleToggleEnterToSend = React.useCallback(() => {
-        const next = !enterToSend;
-        setEnterToSend(next);
-        void updateDesktopSettings({ enterToSend: next });
-    }, [enterToSend, setEnterToSend]);
 
     const openIssuePicker = React.useCallback(() => {
         setIssuePickerOpen(true);
@@ -1688,25 +1680,12 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
             return;
         }
 
-        // Enter-key policy, controlled by the composer's enterToSend toggle
-        // (and the `enterToSend` chat setting): when on, plain Enter submits
-        // and Shift+Enter inserts a newline; when off, Shift+Enter submits and
-        // plain Enter inserts a newline. Ctrl/Cmd+Enter always submits, the
-        // soft-keyboard fallback route, and never inserts a newline.
-        const enterSubmits = enterToSend;
-
-        // Handle Enter/Ctrl+Enter based on selected follow-up behavior.
-        if (e.key === 'Enter') {
-            const isShiftEnter = e.shiftKey;
-            const isCtrlEnter = e.ctrlKey || e.metaKey;
-
-            // Plain Enter submits when enterToSend; Shift+Enter submits when
-            // not. Ctrl/Cmd+Enter always submits regardless of the toggle.
-            const thisEnterSubmits = enterSubmits ? !isShiftEnter : isShiftEnter;
-            if (!thisEnterSubmits && !isCtrlEnter) {
-                // Not a submit: let the editor insert a newline.
-                return;
-            }
+        // Mobile and desktop focus mode require a modifier by default. The
+        // setting opts into plain Enter submission without changing desktop's
+        // existing default.
+        const requiresModifierToSend = (isMobile || isDesktopExpanded) && !enterToSend;
+        const isCtrlEnter = e.ctrlKey || e.metaKey;
+        if (e.key === 'Enter' && !e.shiftKey && (!requiresModifierToSend || e.ctrlKey || e.metaKey)) {
             e.preventDefault();
 
             // Queueing / steering only works when there's an existing busy
@@ -3032,7 +3011,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                         canAbort={canAbort}
                         hasContent={Boolean(hasContent)}
                         isExpandedInput={isExpandedInput}
-                        enterToSend={enterToSend}
                         permissionAutoAcceptEnabled={permissionAutoAcceptEnabled}
                         isPermissionAutoAcceptInteractive={isPermissionAutoAcceptInteractive}
                         dictationActive={mobileShell.dictationActive}
@@ -3043,7 +3021,6 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                         onOpenAttachSheet={openMobileAttachSheet}
                         onToggleExpandedInput={handleToggleExpandedInput}
                         onTogglePermissionAutoAccept={handlePermissionAutoAcceptToggle}
-                        onToggleEnterToSend={handleToggleEnterToSend}
                         onPrimaryAction={handlePrimaryAction}
                         onQueueMessage={handleQueueMessage}
                         onAbort={handleAbort}

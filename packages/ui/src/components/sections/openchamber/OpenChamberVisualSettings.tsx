@@ -283,7 +283,7 @@ const normalizeUserMessageRenderingMode = (mode: unknown): 'markdown' | 'plain' 
     return mode === 'markdown' ? 'markdown' : 'plain';
 };
 
-type VisibleSetting = 'sessionAssist' | 'sessionGoal' | 'theme' | 'windowControlsPosition' | 'pwaInstallName' | 'pwaOrientation' | 'mobileKeyboardMode' | 'timeFormat' | 'weekStart' | 'fontSize' | 'terminalFontSize' | 'terminalShell' | 'terminalLoginShell' | 'editorFontSize' | 'spacing' | 'inputBarOffset' | 'mermaidRendering' | 'userMessageRendering' | 'chatRenderMode' | 'messageTransport' | 'activityRenderMode' | 'collapsibleUserMessages' | 'stickyUserHeader' | 'promptNavigatorEnabled' | 'wideChatLayout' | 'codeBlockLineWrap' | 'splitAssistantMessageActions' | 'subagentReadOnlyBanner' | 'diffLayout' | 'mobileStatusBar' | 'dotfiles' | 'fileViewerPreview' | 'reasoning' | 'showToolFileIcons' | 'showTurnChangedFiles' | 'expandedTools' | 'followUpBehavior' | 'terminalQuickKeys' | 'fileEditorKeymap' | 'persistDraft' | 'inputSpellcheck' | 'largeTextPaste' | 'reportUsage' | 'autoSaveEnabled' | 'sessionTabs';
+type VisibleSetting = 'sessionAssist' | 'sessionGoal' | 'theme' | 'windowControlsPosition' | 'pwaInstallName' | 'pwaOrientation' | 'mobileKeyboardMode' | 'timeFormat' | 'weekStart' | 'fontSize' | 'terminalFontSize' | 'terminalShell' | 'terminalLoginShell' | 'editorFontSize' | 'spacing' | 'inputBarOffset' | 'mermaidRendering' | 'userMessageRendering' | 'chatRenderMode' | 'messageTransport' | 'activityRenderMode' | 'collapsibleUserMessages' | 'stickyUserHeader' | 'promptNavigatorEnabled' | 'wideChatLayout' | 'codeBlockLineWrap' | 'splitAssistantMessageActions' | 'subagentReadOnlyBanner' | 'diffLayout' | 'mobileStatusBar' | 'dotfiles' | 'fileViewerPreview' | 'reasoning' | 'showToolFileIcons' | 'showTurnChangedFiles' | 'expandedTools' | 'followUpBehavior' | 'terminalQuickKeys' | 'fileEditorKeymap' | 'persistDraft' | 'inputSpellcheck' | 'largeTextPaste' | 'enterToSend' | 'reportUsage' | 'autoSaveEnabled' | 'sessionTabs';
 
 const WINDOW_CONTROLS_POSITION_OPTIONS: Array<{ id: DesktopWindowControlsPosition; labelKey: string }> = [
     { id: 'left', labelKey: 'settings.openchamber.desktopNetwork.option.windowControlsLeft' },
@@ -380,6 +380,8 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     const setInputSpellcheckEnabled = useUIStore(state => state.setInputSpellcheckEnabled);
     const largeTextPasteBehavior = useUIStore(state => state.largeTextPasteBehavior);
     const setLargeTextPasteBehavior = useUIStore(state => state.setLargeTextPasteBehavior);
+    const enterToSend = useUIStore(state => state.enterToSend);
+    const setEnterToSend = useUIStore(state => state.setEnterToSend);
     const showToolFileIcons = useUIStore(state => state.showToolFileIcons);
     const setShowToolFileIcons = useUIStore(state => state.setShowToolFileIcons);
     const showTurnChangedFiles = useUIStore(state => state.showTurnChangedFiles);
@@ -539,6 +541,11 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         void updateDesktopSettings({ inputSpellcheckEnabled: enabled });
     }, [setInputSpellcheckEnabled]);
 
+    const handleEnterToSendChange = React.useCallback((enabled: boolean) => {
+        setEnterToSend(enabled);
+        void updateDesktopSettings({ enterToSend: enabled });
+    }, [setEnterToSend]);
+
     const handleChatRenderModeChange = React.useCallback((mode: 'sorted' | 'live') => {
         setChatRenderMode(mode);
         void updateDesktopSettings({ chatRenderMode: mode });
@@ -660,7 +667,8 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         || shouldShow('largeTextPaste')
         || shouldShow('showToolFileIcons')
         || shouldShow('expandedTools')
-        || (!isMobile && shouldShow('inputSpellcheck'));
+        || (!isMobile && shouldShow('inputSpellcheck'))
+        || shouldShow('enterToSend');
     const showBehaviorDisplaySettings = shouldShow('chatRenderMode')
         || (shouldShow('activityRenderMode') && chatRenderMode === 'sorted');
     const showTransportSection = shouldShow('messageTransport');
@@ -684,6 +692,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         || shouldShow('showToolFileIcons')
         || shouldShow('showTurnChangedFiles')
         || (!isMobile && shouldShow('inputSpellcheck'))
+         || shouldShow('enterToSend')
         || shouldShow('reasoning')
         || shouldShow('expandedTools');
     // First behavior section under the page header should not draw a top border on Chat-only;
@@ -2001,7 +2010,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                 </SettingsSection>
                                 )}
 
-                                {(shouldShow('persistDraft') || shouldShow('largeTextPaste') || (!isMobile && shouldShow('inputSpellcheck'))) && (
+                                {(shouldShow('persistDraft') || shouldShow('largeTextPaste') || (!isMobile && shouldShow('inputSpellcheck')) || shouldShow('enterToSend')) && (
                                 <SettingsSection
                                     title={t('settings.openchamber.visual.section.composer')}
                                     settingsItem="chat.composer"
@@ -2026,7 +2035,6 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                         settingsItem="chat.spellcheck"
                                     />
                                 )}
-
                                 {shouldShow('largeTextPaste') && (
                                     <SettingsControlGroup
                                         title={t('settings.openchamber.visual.field.largeTextPaste')}
@@ -2045,6 +2053,15 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                             ))}
                                         </SettingsRadioGroup>
                                     </SettingsControlGroup>
+                                )}
+                                {shouldShow('enterToSend') && (
+                                    <SettingsCheckboxRow
+                                        checked={enterToSend}
+                                        onChange={handleEnterToSendChange}
+                                        label={t('chat.chatInput.actions.enterToSend')}
+                                        ariaLabel={t('chat.chatInput.actions.enterToSend')}
+                                        settingsItem="chat.enter-to-send"
+                                    />
                                 )}
                                 </SettingsSection>
                                 )}
