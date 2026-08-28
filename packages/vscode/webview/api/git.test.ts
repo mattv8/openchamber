@@ -113,18 +113,52 @@ describe('VS Code webview git API', () => {
     }));
     await mergeBasePromise;
 
-    const commitFilesPromise = api.getCommitFiles?.('/repo', { commitHash: 'abc123', parentHash: 'def456' });
+    const commitHash = 'a'.repeat(40);
+    const parentHash = 'b'.repeat(40);
+    const commitFilesPromise = api.getCommitFiles?.('/repo', {
+      commitHash,
+      parentHash,
+    });
     const commitFilesRequest = messages.at(-1);
     assert.equal(commitFilesRequest?.type, 'api:git/commit-files');
-    assert.deepEqual(commitFilesRequest?.payload, { directory: '/repo', hash: 'abc123', parentHash: 'def456' });
-    globalThis.window.dispatchEvent(new MessageEvent('message', { data: { id: commitFilesRequest?.id, type: commitFilesRequest?.type, success: true, data: { files: [] } } }));
+    assert.deepEqual(commitFilesRequest?.payload, {
+      directory: '/repo',
+      hash: commitHash,
+      parentHash,
+    });
+    globalThis.window.dispatchEvent(new MessageEvent('message', {
+      data: {
+        id: commitFilesRequest?.id,
+        type: commitFilesRequest?.type,
+        success: true,
+        data: { files: [] },
+      },
+    }));
     await commitFilesPromise;
 
-    const previewPromise = api.getCommitFileDiff?.('/repo', { commitHash: 'abc123', parentHash: 'def456', originalPath: 'old.ts', modifiedPath: 'new.ts' });
-    const previewRequest = messages.at(-1);
-    assert.equal(previewRequest?.type, 'api:git/commit-file-diff');
-    assert.deepEqual(previewRequest?.payload, { directory: '/repo', hash: 'abc123', parentHash: 'def456', originalPath: 'old.ts', modifiedPath: 'new.ts' });
-    globalThis.window.dispatchEvent(new MessageEvent('message', { data: { id: previewRequest?.id, type: previewRequest?.type, success: true, data: { status: 'too-large', totalBytes: 8388609, maxBytes: 8388608 } } }));
-    await previewPromise;
+    const commitPreviewPromise = api.getCommitFileDiff?.('/repo', {
+      commitHash,
+      parentHash,
+      originalPath: 'old/name.ts',
+      modifiedPath: 'new/name.ts',
+    });
+    const commitPreviewRequest = messages.at(-1);
+    assert.equal(commitPreviewRequest?.type, 'api:git/commit-file-diff');
+    assert.deepEqual(commitPreviewRequest?.payload, {
+      directory: '/repo',
+      hash: commitHash,
+      parentHash,
+      originalPath: 'old/name.ts',
+      modifiedPath: 'new/name.ts',
+    });
+    globalThis.window.dispatchEvent(new MessageEvent('message', {
+      data: {
+        id: commitPreviewRequest?.id,
+        type: commitPreviewRequest?.type,
+        success: true,
+        data: { status: 'too-large', totalBytes: 8388609, maxBytes: 8388608 },
+      },
+    }));
+    await commitPreviewPromise;
   });
 });
