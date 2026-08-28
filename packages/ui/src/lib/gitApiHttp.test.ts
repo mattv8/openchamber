@@ -40,6 +40,7 @@ import type {
   GitStatus,
 } from './api/types';
 import { sessionEvents } from './sessionEvents';
+import { GitHistoryRequestError, STALE_GIT_HISTORY_CURSOR_CODE } from './gitHistoryError';
 
 type FetchCall = {
   input: RequestInfo | URL;
@@ -588,6 +589,56 @@ describe('gitApiHttp history requests', () => {
       await getGitHistory('/repo', { all: true, cursor: 'cursor', limit: 25 });
 
       expect(String(calls[0].input)).toBe('/api/git/history?directory=%2Frepo&all=true&cursor=cursor&limit=25');
+    } finally {
+      restoreMocks();
+    }
+  });
+
+  test('preserves structured stale cursor history errors from the server', async () => {
+    installWindowMock();
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      error: 'stale cursor',
+      code: STALE_GIT_HISTORY_CURSOR_CODE,
+    }), {
+      status: 409,
+      statusText: 'Conflict',
+      headers: { 'Content-Type': 'application/json' },
+    })) as typeof fetch;
+
+    try {
+      const error = await captureError(() => getGitHistory('/repo', { refs: ['HEAD'] }));
+      expect(error).toBeInstanceOf(GitHistoryRequestError);
+      expect((error as GitHistoryRequestError).message).toBe('stale cursor');
+      expect((error as GitHistoryRequestError).status).toBe(409);
+      expect((error as GitHistoryRequestError).code).toBe(STALE_GIT_HISTORY_CURSOR_CODE);
+    } finally {
+      restoreMocks();
+    }
+  });
+
+  test('falls back to the status text when the history error body is unusable', async () => {
+    installWindowMock();
+
+    const cases = [
+      new Response('{"error":', {
+        status: 502,
+        statusText: 'Bad Gateway',
+        headers: { 'Content-Type': 'application/json' },
+      }),
+      new Response(JSON.stringify({}), {
+        status: 503,
+        statusText: 'Service Unavailable',
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ];
+
+    try {
+      for (const response of cases) {
+        globalThis.fetch = (async () => response.clone()) as typeof fetch;
+        const error = await captureError(() => getGitHistory('/repo', { refs: ['HEAD'] }));
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message).toBe(`Failed to get git history: ${response.statusText}`);
+      }
     } finally {
       restoreMocks();
     }
