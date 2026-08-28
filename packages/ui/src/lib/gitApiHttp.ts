@@ -47,11 +47,17 @@ import { runtimeFetch } from './runtime-fetch';
 import { getRuntimeUrlResolver } from './runtime-url';
 import { getRuntimeKey } from './runtime-switch';
 import { notifyGitStatusInvalidated } from './gitStatusInvalidation';
+import { GitHistoryRequestError } from './gitHistoryError';
+import { z } from 'zod';
 
 const API_BASE = '/api/git';
 const ROOT_QUERY_MARKER = '__ROOT__';
 const GIT_STATUS_CACHE_TTL_MS = 1200;
 const GIT_REPO_CHECK_CACHE_TTL_MS = 5000;
+const gitHistoryErrorPayloadSchema = z.object({
+  error: z.string().trim().min(1).optional(),
+  code: z.string().trim().min(1).optional(),
+});
 const gitStatusCache = new Map<string, { value: GitStatus; expiresAt: number }>();
 const gitStatusInFlight = new Map<string, Promise<GitStatus>>();
 const gitStatusCacheVersions = new Map<string, number>();
@@ -148,7 +154,12 @@ export async function getGitHistory(directory: string, options: GitHistoryOption
     limit: options.limit,
   }));
   if (!response.ok) {
-    throw new Error(`Failed to get git history: ${response.statusText}`);
+    const payload = await response.json().catch(() => null);
+    const parsed = gitHistoryErrorPayloadSchema.safeParse(payload);
+    const detail = parsed.success ? (parsed.data.error ?? null) : null;
+    const code = parsed.success ? parsed.data.code : undefined;
+    throw new GitHistoryRequestError(detail ?? `Failed to get git history: ${response.statusText}`,
+      { status: response.status, code });
   }
   return response.json();
 }

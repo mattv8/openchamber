@@ -15,6 +15,7 @@ import { getDeferredSafeStorage } from '@/stores/utils/safeStorage';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { GitDirectoriesUnsupportedError, listGitDirectories } from '@/lib/gitApiHttp';
 import { subscribeGitStatusInvalidations } from '@/lib/gitStatusInvalidation';
+import { isStaleGitHistoryCursorError } from '@/lib/gitHistoryError';
 
 const LOG_STALE_THRESHOLD = 10000;
 const REPO_CHECK_STALE_THRESHOLD = 60_000;
@@ -252,11 +253,6 @@ const buildHistoryRequestOptions = (
   return { refs: resolveHistoryQueryRefs(refsResponse, query) };
 };
 
-const isStaleHistoryCursorError = (error: Error): boolean => {
-  const message = error.message.toLowerCase();
-  return message.includes('stale') && message.includes('cursor');
-};
-
 const formatHistoryRefsError = (error: unknown): string => {
   const message = error instanceof Error ? error.message : 'Failed to load refs';
   return /not a git repository/i.test(message) ? NON_REPOSITORY_ERROR : message;
@@ -275,15 +271,16 @@ const startRequest = (directory: string, channel: string, includeStatusMutation 
   const key = channelKey(runtimeKey, directory, channel);
   const requestGeneration = (requestGenerationByChannel.get(key) ?? 0) + 1;
   requestGenerationByChannel.set(key, requestGeneration);
-  return {
+  const token: GitRequestToken = {
     runtimeKey,
     runtimeGeneration: gitRuntimeGeneration,
     channelKey: key,
     requestGeneration,
-    ...(includeStatusMutation
-      ? { statusMutationRevision: statusMutationRevisionByDirectory.get(runtimeDirectoryKey(runtimeKey, directory)) ?? 0 }
-      : {}),
   };
+  if (includeStatusMutation) {
+    token.statusMutationRevision = statusMutationRevisionByDirectory.get(runtimeDirectoryKey(runtimeKey, directory)) ?? 0;
+  }
+  return token;
 };
 
 const isRequestCurrent = (token: GitRequestToken, directory: string): boolean => (
@@ -988,7 +985,7 @@ export const useGitStore = create<GitStore>()(
           await commitPage(append && !shouldRestart && nextCursor !== null, nextCursor);
         } catch (error) {
           const historyError = error instanceof Error ? error : new Error('Failed to load graph history');
-          if (append && nextCursor && isStaleHistoryCursorError(historyError)) {
+          if (append && nextCursor && isStaleGitHistoryCursorError(historyError)) {
             await commitPage(false, null);
             return;
           }
