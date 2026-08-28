@@ -1941,6 +1941,12 @@ describe('hash validation', () => {
     ).rejects.not.toThrow('Invalid commit hash');
   });
 
+  it('checkoutCommit accepts valid 64-char hex format', async () => {
+    await expect(
+      checkoutCommit('/tmp', 'a'.repeat(64))
+    ).rejects.not.toThrow('Invalid commit hash');
+  });
+
   it('cherryPick rejects non-hex hash', async () => {
     await expect(cherryPick('/tmp', '--hard')).rejects.toThrow('Invalid commit hash');
   });
@@ -1952,6 +1958,12 @@ describe('hash validation', () => {
   it('cherryPick accepts valid 40-char hex format', async () => {
     await expect(
       cherryPick('/tmp', '1234567890abcdef1234567890abcdef12345678')
+    ).rejects.not.toThrow('Invalid commit hash');
+  });
+
+  it('cherryPick accepts valid 64-char hex format', async () => {
+    await expect(
+      cherryPick('/tmp', 'b'.repeat(64))
     ).rejects.not.toThrow('Invalid commit hash');
   });
 
@@ -1969,6 +1981,12 @@ describe('hash validation', () => {
     ).rejects.not.toThrow('Invalid commit hash');
   });
 
+  it('revertCommit accepts valid 64-char hex format', async () => {
+    await expect(
+      revertCommit('/tmp', 'c'.repeat(64))
+    ).rejects.not.toThrow('Invalid commit hash');
+  });
+
   it('resetToCommit rejects non-hex hash', async () => {
     await expect(resetToCommit('/tmp', '--hard', 'soft')).rejects.toThrow('Invalid commit hash');
   });
@@ -1980,6 +1998,12 @@ describe('hash validation', () => {
   it('resetToCommit accepts valid 40-char hex format', async () => {
     await expect(
       resetToCommit('/tmp', '1234567890abcdef1234567890abcdef12345678', 'soft')
+    ).rejects.not.toThrow('Invalid commit hash');
+  });
+
+  it('resetToCommit accepts valid 64-char hex format', async () => {
+    await expect(
+      resetToCommit('/tmp', 'd'.repeat(64), 'soft')
     ).rejects.not.toThrow('Invalid commit hash');
   });
 });
