@@ -3,6 +3,7 @@ import { createSerialRefresh } from './serial-refresh.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import { createRequire } from 'module';
@@ -4463,10 +4464,13 @@ const mapGitHistoryRef = (id, name, revision) => {
   return { id, name, revision, kind: 'tag', category: 'tags' };
 };
 
-const buildGitHistorySnapshot = (refs, current) => [...refs, ...(current ? [current] : [])]
-  .map((ref) => `${ref.id}:${ref.revision || ''}`)
-  .sort((left, right) => left.localeCompare(right))
-  .join('|');
+// Hash snapshot so pagination cursor stays small while ref changes invalidate it.
+const buildGitHistorySnapshot = (refs, current) => createHash('sha256')
+  .update([...refs, ...(current ? [current] : [])]
+    .map((ref) => `${ref.id}:${ref.revision || ''}`)
+    .sort((left, right) => left.localeCompare(right))
+    .join('|'))
+  .digest('hex');
 
 const buildGitHistoryBaseRef = ({ refsById, refs, headBranch, upstream, defaultBranches }) => {
   if (!upstream && Object.keys(defaultBranches).length === 0) {
