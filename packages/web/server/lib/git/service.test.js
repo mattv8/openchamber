@@ -2845,7 +2845,7 @@ describe('parseBranchCreationSource', () => {
   });
 });
 
-describe.runIf(canRunGit())('getRangeFiles', () => {
+describeIfGit('getRangeFiles', () => {
   it('returns added and modified paths with their status letters', async () => {
     const { repository } = createRepositoryWithRemote();
     fs.writeFileSync(path.join(repository, 'added.txt'), 'new\n');
@@ -2971,15 +2971,16 @@ describe.runIf(canRunGit())('git history graph service', () => {
       expect.objectContaining({ id: 'refs/remotes/origin/main', name: 'origin/main', kind: 'remote', category: 'remote-branches' }),
       expect.objectContaining({ id: 'refs/tags/v1.0.0', name: 'v1.0.0', kind: 'tag', category: 'tags' }),
     ]));
-    expect(refs.snapshot.split('|')).toEqual(expect.arrayContaining([
-      `refs/heads/feature:${commits.mergeCommit}`,
-      `refs/heads/main:${commits.initialCommit}`,
-      `refs/remotes/origin/main:${commits.initialCommit}`,
-    ]));
+    expect(refs.snapshot).toMatch(/^[0-9a-f]{64}$/);
+    expect(refs.snapshot).not.toBe(commits.mergeCommit);
   });
 
-  it('returns topological history pages with structured decorations and cursor continuation', async () => {
+  it('returns bounded topological history pages with structured decorations and cursor continuation', async () => {
     const { repository, commits } = createHistoryRepository();
+
+    for (let index = 0; index < 180; index += 1) {
+      runGit(repository, ['branch', `bounded-branch-${index + 1}`, commits.initialCommit]);
+    }
 
     const firstPage = await getGitHistory(repository, { refs: ['HEAD'], limit: 2 });
 
@@ -2995,6 +2996,8 @@ describe.runIf(canRunGit())('git history graph service', () => {
       expect.objectContaining({ id: 'refs/tags/release/feature', kind: 'tag' }),
     ]));
     expect(firstPage.hasMore).toBe(true);
+    expect(firstPage.nextCursor).not.toBeNull();
+    expect(firstPage.nextCursor.length).toBeLessThan(256);
     expect(JSON.parse(Buffer.from(firstPage.nextCursor, 'base64url').toString('utf8'))).toEqual({
       offset: 2,
       snapshot: firstPage.refsSnapshot,
