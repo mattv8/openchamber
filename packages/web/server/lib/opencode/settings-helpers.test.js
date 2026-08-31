@@ -5,6 +5,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+import {
+  DEFAULT_INPUT_HISTORY_LIMIT,
+} from './input-history-scope.js';
 import { createSettingsHelpers } from './settings-helpers.js';
 import { createSettingsNormalizationRuntime } from './settings-normalization-runtime.js';
 
@@ -114,8 +117,12 @@ describe('settings helpers', () => {
       expect(helpers.sanitizeSettingsUpdate({ inputHistoryScope: 'session' })).toEqual({
         inputHistoryScope: 'session',
       });
+      expect(helpers.sanitizeSettingsUpdate({ inputHistoryLimit: 40 })).toEqual({
+        inputHistoryLimit: 40,
+      });
       expect(helpers.formatSettingsResponse({})).toMatchObject({
         inputHistoryScope: 'global',
+        inputHistoryLimit: DEFAULT_INPUT_HISTORY_LIMIT,
       });
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
@@ -209,6 +216,32 @@ describe('settings helpers', () => {
     });
   });
 
+  it('accepts valid inputHistoryLimit values as a persisted shared setting', () => {
+    const helpers = createTestHelpers();
+
+    expect(helpers.sanitizeSettingsUpdate({ inputHistoryLimit: 1 })).toEqual({
+      inputHistoryLimit: 1,
+    });
+    expect(helpers.sanitizeSettingsUpdate({ inputHistoryLimit: 40 })).toEqual({
+      inputHistoryLimit: 40,
+    });
+    expect(helpers.sanitizeSettingsUpdate({ inputHistoryLimit: 100 })).toEqual({
+      inputHistoryLimit: 100,
+    });
+  });
+
+  it('rejects invalid inputHistoryLimit values', () => {
+    const helpers = createTestHelpers();
+
+    expect(helpers.sanitizeSettingsUpdate({ inputHistoryLimit: 0 })).toEqual({});
+    expect(helpers.sanitizeSettingsUpdate({ inputHistoryLimit: 101 })).toEqual({});
+    expect(helpers.sanitizeSettingsUpdate({ inputHistoryLimit: 1.5 })).toEqual({});
+    expect(helpers.sanitizeSettingsUpdate({ inputHistoryLimit: '40' })).toEqual({});
+    expect(helpers.sanitizeSettingsUpdate({ inputHistoryLimit: Number.NaN })).toEqual({});
+    expect(helpers.sanitizeSettingsUpdate({ inputHistoryLimit: Number.POSITIVE_INFINITY })).toEqual({});
+    expect(helpers.sanitizeSettingsUpdate({ inputHistoryLimit: Number.NEGATIVE_INFINITY })).toEqual({});
+  });
+
   it('rejects invalid inputHistoryScope values', () => {
     const helpers = createTestHelpers();
 
@@ -223,6 +256,20 @@ describe('settings helpers', () => {
     });
     expect(helpers.formatSettingsResponse({})).toMatchObject({
       inputHistoryScope: 'global',
+    });
+  });
+
+  it('defaults missing inputHistoryLimit to 40 in formatted settings responses and preserves valid values', () => {
+    const helpers = createTestHelpers();
+
+    expect(helpers.formatSettingsResponse({})).toMatchObject({
+      inputHistoryLimit: DEFAULT_INPUT_HISTORY_LIMIT,
+    });
+    expect(helpers.formatSettingsResponse({ inputHistoryLimit: 1 })).toMatchObject({
+      inputHistoryLimit: 1,
+    });
+    expect(helpers.formatSettingsResponse({ inputHistoryLimit: 100 })).toMatchObject({
+      inputHistoryLimit: 100,
     });
   });
 

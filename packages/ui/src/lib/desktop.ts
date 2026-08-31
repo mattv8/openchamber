@@ -177,6 +177,7 @@ export type DesktopSettings = {
   chatRenderMode?: 'sorted' | 'live';
   messageStreamTransport?: 'auto' | 'ws' | 'sse';
   inputHistoryScope?: InputHistoryScope;
+  inputHistoryLimit?: number;
   activityRenderMode?: 'collapsed' | 'summary';
   mermaidRenderingMode?: 'svg' | 'ascii';
   userMessageRenderingMode?: 'markdown' | 'plain';

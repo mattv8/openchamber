@@ -2231,6 +2231,10 @@ export const settingsDict = {
   'settings.openchamber.visual.section.inputHistoryScopeAria': 'Zakres historii wpisów',
   'settings.openchamber.visual.option.inputHistoryScope.global.label': 'Wszystkie projekty',
   'settings.openchamber.visual.option.inputHistoryScope.session.label': 'Bieżąca sesja',
+  'settings.openchamber.visual.field.inputHistoryLimit': 'Liczba zapamiętywanych promptów',
+  'settings.openchamber.visual.field.inputHistoryLimitDescription': 'Zmniejszenie tej liczby od razu usuwa starsze prompty z historii.',
+  'settings.openchamber.visual.field.inputHistoryLimitAria': 'Liczba zapamiętywanych promptów',
+  'settings.openchamber.visual.field.inputHistoryLimitUnit': 'promptów',
   ...linearIntegrationI18n.pl,
   ...thirdPartyIntegrationI18n.pl,
 };

@@ -349,6 +349,13 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['input history', 'composer history', 'global', 'session', 'reuse'],
   },
   {
+    id: 'chat.input-history-limit',
+    page: 'chat',
+    titleKey: 'settings.openchamber.visual.field.inputHistoryLimit',
+    descriptionKey: 'settings.openchamber.visual.field.inputHistoryLimitDescription',
+    keywords: ['history limit', 'prompt recall', 'remember prompts', 'composer history', 'submitted prompts', 'trim history'],
+  },
+  {
     id: 'chat.persist-drafts',
     page: 'chat',
     titleKey: 'settings.openchamber.visual.field.persistDraftMessages',

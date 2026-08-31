@@ -2238,6 +2238,10 @@ export const settingsDict = {
   'settings.openchamber.visual.section.inputHistoryScopeAria': '輸入歷史範圍',
   'settings.openchamber.visual.option.inputHistoryScope.global.label': '所有專案',
   'settings.openchamber.visual.option.inputHistoryScope.session.label': '目前工作階段',
+  'settings.openchamber.visual.field.inputHistoryLimit': '要記住的提示詞數量',
+  'settings.openchamber.visual.field.inputHistoryLimitDescription': '調低這個數字會立刻從歷史記錄移除較早的提示詞。',
+  'settings.openchamber.visual.field.inputHistoryLimitAria': '要記住的提示詞數量',
+  'settings.openchamber.visual.field.inputHistoryLimitUnit': '則',
   ...linearIntegrationI18n['zh-TW'],
   ...thirdPartyIntegrationI18n['zh-TW'],
 } as const;

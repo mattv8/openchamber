@@ -2238,6 +2238,10 @@ export const settingsDict = {
   "settings.openchamber.visual.section.inputHistoryScopeAria": "Обсяг історії введення",
   "settings.openchamber.visual.option.inputHistoryScope.global.label": "Усі проєкти",
   "settings.openchamber.visual.option.inputHistoryScope.session.label": "Поточна сесія",
+  "settings.openchamber.visual.field.inputHistoryLimit": "Скільки промптів пам’ятати",
+  "settings.openchamber.visual.field.inputHistoryLimitDescription": "Якщо зменшити це число, старіші промпти одразу буде видалено з історії.",
+  "settings.openchamber.visual.field.inputHistoryLimitAria": "Скільки промптів пам’ятати",
+  "settings.openchamber.visual.field.inputHistoryLimitUnit": "промптів",
   ...linearIntegrationI18n.uk,
   ...thirdPartyIntegrationI18n.uk,
 } as const;

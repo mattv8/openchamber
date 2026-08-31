@@ -2228,6 +2228,10 @@ export const settingsDict = {
   'settings.openchamber.visual.section.inputHistoryScopeAria': 'Input history scope',
   'settings.openchamber.visual.option.inputHistoryScope.global.label': 'All projects',
   'settings.openchamber.visual.option.inputHistoryScope.session.label': 'Current session',
+  'settings.openchamber.visual.field.inputHistoryLimit': 'Prompts to remember',
+  'settings.openchamber.visual.field.inputHistoryLimitDescription': 'Lowering this number removes older prompts from your history.',
+  'settings.openchamber.visual.field.inputHistoryLimitAria': 'Prompts to remember',
+  'settings.openchamber.visual.field.inputHistoryLimitUnit': 'prompts',
   ...linearIntegrationI18n.en,
   ...thirdPartyIntegrationI18n.en,
 } as const;

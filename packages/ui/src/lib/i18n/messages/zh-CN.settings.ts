@@ -2238,6 +2238,10 @@ export const settingsDict = {
   'settings.openchamber.visual.section.inputHistoryScopeAria': '输入历史范围',
   'settings.openchamber.visual.option.inputHistoryScope.global.label': '所有项目',
   'settings.openchamber.visual.option.inputHistoryScope.session.label': '当前会话',
+  'settings.openchamber.visual.field.inputHistoryLimit': '要记住的提示词数量',
+  'settings.openchamber.visual.field.inputHistoryLimitDescription': '调低这个数字会立即从历史记录中删除较早的提示词。',
+  'settings.openchamber.visual.field.inputHistoryLimitAria': '要记住的提示词数量',
+  'settings.openchamber.visual.field.inputHistoryLimitUnit': '条',
   ...linearIntegrationI18n['zh-CN'],
   ...thirdPartyIntegrationI18n['zh-CN'],
 } as const;

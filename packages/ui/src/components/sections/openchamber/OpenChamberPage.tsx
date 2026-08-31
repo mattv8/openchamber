@@ -205,6 +205,7 @@ const ChatSectionContent: React.FC = () => {
                 'subagentReadOnlyBanner',
                 'diffLayout',
                 'inputHistoryScope',
+                'inputHistoryLimit',
                 'dotfiles',
                 'fileViewerPreview',
                 'followUpBehavior',

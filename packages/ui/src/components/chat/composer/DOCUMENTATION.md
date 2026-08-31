@@ -182,7 +182,8 @@ Prompt recall has two owners on purpose.
 
 - `packages/ui/src/stores/useInputHistoryStore.ts` owns the persisted source of
   truth. It keeps the runtime-scoped global bucket and the runtime + directory
-  + session bucket, each capped at 40 entries.
+  + session bucket, each capped by the configurable input-history limit. That
+  setting defaults to 40 entries.
 - `state/useMessageHistory.ts` owns only keyboard traversal through whichever
   bucket the composer was given. It stashes the current draft on entry and
   restores it on the way back out.

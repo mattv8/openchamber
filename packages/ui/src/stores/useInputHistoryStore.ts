@@ -2,7 +2,9 @@ import { create } from 'zustand';
 import { z } from 'zod';
 
 import {
+  DEFAULT_INPUT_HISTORY_LIMIT,
   DEFAULT_INPUT_HISTORY_SCOPE,
+  isInputHistoryLimit,
   isInputHistoryScope,
   type InputHistoryScope,
 } from '@/lib/inputHistoryScope';
@@ -40,6 +42,7 @@ type InputHistoryNamespace = {
 };
 
 type InputHistorySnapshot = {
+  entryLimit: number;
   scope: InputHistoryScope;
   globalBuckets: Record<string, InputHistoryNamespace>;
   sessionBuckets: Record<string, InputHistoryNamespace>;
@@ -47,19 +50,20 @@ type InputHistorySnapshot = {
 
 type PersistedInputHistoryEnvelope = {
   version: 1;
+  entryLimit?: number;
   scope: InputHistoryScope;
   global: Record<string, InputHistoryNamespace>;
   session: Record<string, InputHistoryNamespace>;
 };
 
 type InputHistoryStoreState = InputHistorySnapshot & {
+  applyEntryLimit: (limit: number) => void;
   applyScope: (scope: InputHistoryScope) => void;
   appendSubmissions: (identity: InputHistoryIdentity, submissions: readonly InputHistorySubmission[]) => void;
   clearSession: (identity: InputHistoryIdentity) => void;
 };
 
 const STORAGE_KEY = 'openchamber-input-history.v1';
-const ENTRY_LIMIT = 40;
 const GLOBAL_NAMESPACE_LIMIT = 8;
 const SESSION_NAMESPACE_LIMIT = 50;
 const QUOTA_RETRY_LIMITS = [40, 25, 10, 5, 1] as const;
@@ -68,7 +72,11 @@ const EMPTY_ENTRIES: readonly InputHistoryEntry[] = Object.freeze([]);
 let inMemoryStorageValue: string | null = null;
 let touchSequence = 0;
 
-const createEmptySnapshot = (scope: InputHistoryScope = DEFAULT_INPUT_HISTORY_SCOPE): InputHistorySnapshot => ({
+const createEmptySnapshot = (
+  scope: InputHistoryScope = DEFAULT_INPUT_HISTORY_SCOPE,
+  entryLimit = DEFAULT_INPUT_HISTORY_LIMIT,
+): InputHistorySnapshot => ({
+  entryLimit,
   scope,
   globalBuckets: {},
   sessionBuckets: {},
@@ -171,12 +179,16 @@ const readSnapshot = (): InputHistorySnapshot => {
     const parsed = JSON.parse(raw);
     const envelopeResult = z.object({
       version: z.literal(1),
+      entryLimit: z.number().int().optional(),
       scope: z.union([z.literal('global'), z.literal('session')]).optional(),
       global: rawNamespaceRecordSchema.default({}),
       session: rawNamespaceRecordSchema.default({}),
     }).safeParse(parsed);
     if (!envelopeResult.success) return createEmptySnapshot();
     return {
+      entryLimit: isInputHistoryLimit(envelopeResult.data.entryLimit)
+        ? envelopeResult.data.entryLimit
+        : DEFAULT_INPUT_HISTORY_LIMIT,
       scope: envelopeResult.data.scope ?? DEFAULT_INPUT_HISTORY_SCOPE,
       globalBuckets: parseNamespaces(envelopeResult.data.global, 1),
       sessionBuckets: parseNamespaces(envelopeResult.data.session, 3),
@@ -217,7 +229,11 @@ const limitNamespaces = (
   return Object.fromEntries(ranked);
 };
 
-const normalizeSnapshotLimits = (snapshot: InputHistorySnapshot, entryLimit = ENTRY_LIMIT): InputHistorySnapshot => ({
+const normalizeSnapshotLimits = (
+  snapshot: InputHistorySnapshot,
+  entryLimit = snapshot.entryLimit,
+): InputHistorySnapshot => ({
+  entryLimit: snapshot.entryLimit,
   scope: snapshot.scope,
   globalBuckets: limitNamespaces(snapshot.globalBuckets, GLOBAL_NAMESPACE_LIMIT, entryLimit),
   sessionBuckets: limitNamespaces(snapshot.sessionBuckets, SESSION_NAMESPACE_LIMIT, entryLimit),
@@ -225,6 +241,7 @@ const normalizeSnapshotLimits = (snapshot: InputHistorySnapshot, entryLimit = EN
 
 const toEnvelope = (snapshot: InputHistorySnapshot): PersistedInputHistoryEnvelope => ({
   version: 1,
+  entryLimit: snapshot.entryLimit,
   scope: snapshot.scope,
   global: snapshot.globalBuckets,
   session: snapshot.sessionBuckets,
@@ -277,7 +294,7 @@ const writeSnapshot = (snapshot: InputHistorySnapshot): InputHistorySnapshot => 
     }
   }
 
-  const emptySnapshot = createEmptySnapshot(normalized.scope);
+  const emptySnapshot = createEmptySnapshot(normalized.scope, normalized.entryLimit);
   const emptySerialized = JSON.stringify(toEnvelope(emptySnapshot));
   try {
     storage.setItem(STORAGE_KEY, emptySerialized);
@@ -394,6 +411,7 @@ const appendToNamespace = (
   namespace: InputHistoryNamespace | undefined,
   submissions: readonly InputHistorySubmission[],
   touchedAt: number,
+  entryLimit: number,
 ): InputHistoryNamespace => {
   const entries = namespace ? [...namespace.entries] : [];
   for (const submission of submissions) {
@@ -408,7 +426,7 @@ const appendToNamespace = (
   }
   return {
     touchedAt,
-    entries: cloneEntriesWithLimit(entries, ENTRY_LIMIT),
+    entries: cloneEntriesWithLimit(entries, entryLimit),
   };
 };
 
@@ -416,12 +434,27 @@ const initialSnapshot = writeSnapshot(readSnapshot());
 
 export const useInputHistoryStore = create<InputHistoryStoreState>((set) => ({
   ...initialSnapshot,
+  applyEntryLimit: (limit) => {
+    if (!isInputHistoryLimit(limit)) return;
+    set((state) => {
+      const latest = readSnapshot();
+      if (latest.entryLimit === limit) return { ...state, ...latest };
+      const nextSnapshot = writeSnapshot({
+        entryLimit: limit,
+        scope: latest.scope,
+        globalBuckets: latest.globalBuckets,
+        sessionBuckets: latest.sessionBuckets,
+      });
+      return { ...state, ...nextSnapshot };
+    });
+  },
   applyScope: (scope) => {
     if (!isInputHistoryScope(scope)) return;
     set((state) => {
       const latest = readSnapshot();
       if (latest.scope === scope) return { ...state, ...latest };
       const nextSnapshot = writeSnapshot({
+        entryLimit: latest.entryLimit,
         scope,
         globalBuckets: latest.globalBuckets,
         sessionBuckets: latest.sessionBuckets,
@@ -437,14 +470,15 @@ export const useInputHistoryStore = create<InputHistoryStoreState>((set) => ({
       const globalKey = createGlobalBucketKey(identity.runtimeKey);
       const sessionKey = createSessionBucketKey(identity.runtimeKey, identity.directory, identity.sessionId);
       const nextSnapshot = writeSnapshot({
+        entryLimit: latest.entryLimit,
         scope: latest.scope,
         globalBuckets: {
           ...latest.globalBuckets,
-          [globalKey]: appendToNamespace(latest.globalBuckets[globalKey], submissions, touchedAt),
+          [globalKey]: appendToNamespace(latest.globalBuckets[globalKey], submissions, touchedAt, latest.entryLimit),
         },
         sessionBuckets: {
           ...latest.sessionBuckets,
-          [sessionKey]: appendToNamespace(latest.sessionBuckets[sessionKey], submissions, touchedAt),
+          [sessionKey]: appendToNamespace(latest.sessionBuckets[sessionKey], submissions, touchedAt, latest.entryLimit),
         },
       });
       return { ...state, ...nextSnapshot };
@@ -458,6 +492,7 @@ export const useInputHistoryStore = create<InputHistoryStoreState>((set) => ({
       const sessionBuckets = { ...latest.sessionBuckets };
       delete sessionBuckets[sessionKey];
       const nextSnapshot = writeSnapshot({
+        entryLimit: latest.entryLimit,
         scope: latest.scope,
         globalBuckets: latest.globalBuckets,
         sessionBuckets,

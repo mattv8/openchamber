@@ -2238,6 +2238,10 @@ export const settingsDict = {
   'settings.openchamber.visual.section.inputHistoryScopeAria': '入力履歴の範囲',
   'settings.openchamber.visual.option.inputHistoryScope.global.label': 'すべてのプロジェクト',
   'settings.openchamber.visual.option.inputHistoryScope.session.label': '現在のセッション',
+  'settings.openchamber.visual.field.inputHistoryLimit': '記憶するプロンプト数',
+  'settings.openchamber.visual.field.inputHistoryLimitDescription': 'この数を減らすと、履歴内の古いプロンプトはすぐに削除されます。',
+  'settings.openchamber.visual.field.inputHistoryLimitAria': '記憶するプロンプト数',
+  'settings.openchamber.visual.field.inputHistoryLimitUnit': '件',
   ...linearIntegrationI18n.ja,
   ...thirdPartyIntegrationI18n.ja,
 } as const;

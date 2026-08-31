@@ -1,6 +1,8 @@
 import { isAgentMemoryFeatureAvailable } from '../agent-memory/feature-flag.js';
 import {
+  DEFAULT_INPUT_HISTORY_LIMIT,
   DEFAULT_INPUT_HISTORY_SCOPE,
+  isInputHistoryLimit,
   isInputHistoryScope,
 } from './input-history-scope.js';
 
@@ -146,6 +148,9 @@ export const createSettingsHelpers = (dependencies) => {
     }
     if (typeof candidate.inputHistoryScope === 'string' && isInputHistoryScope(candidate.inputHistoryScope)) {
       result.inputHistoryScope = candidate.inputHistoryScope;
+    }
+    if (isInputHistoryLimit(candidate.inputHistoryLimit)) {
+      result.inputHistoryLimit = candidate.inputHistoryLimit;
     }
     if (typeof candidate.useSystemTheme === 'boolean') {
       result.useSystemTheme = candidate.useSystemTheme;
@@ -935,6 +940,7 @@ export const createSettingsHelpers = (dependencies) => {
     const pwaOrientation = normalizePwaOrientation(settings?.pwaOrientation, 'system');
     const mobileKeyboardMode = normalizeMobileKeyboardMode(settings?.mobileKeyboardMode, 'native');
     const inputHistoryScope = sanitized.inputHistoryScope ?? DEFAULT_INPUT_HISTORY_SCOPE;
+    const inputHistoryLimit = sanitized.inputHistoryLimit ?? DEFAULT_INPUT_HISTORY_LIMIT;
 
     return {
       ...sanitized,
@@ -946,6 +952,7 @@ export const createSettingsHelpers = (dependencies) => {
       pwaOrientation,
       mobileKeyboardMode,
       inputHistoryScope,
+      inputHistoryLimit,
       securityScopedBookmarks: bookmarks,
       pinnedDirectories: normalizeStringArray(settings.pinnedDirectories),
       typographySizes: sanitizeTypographySizesPartial(settings.typographySizes),

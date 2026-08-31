@@ -700,6 +700,7 @@ export interface SettingsPayload {
   followUpBehavior?: 'steer' | 'queue';
   queueModeEnabled?: boolean;
   inputHistoryScope?: InputHistoryScope;
+  inputHistoryLimit?: number;
   gitmojiEnabled?: boolean;
   inputSpellcheckEnabled?: boolean;
   showOpenCodeUpdateNotifications?: boolean;

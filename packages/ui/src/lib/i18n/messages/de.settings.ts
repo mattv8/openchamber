@@ -2139,6 +2139,10 @@ export const settingsDict = {
   'settings.openchamber.visual.section.inputHistoryScopeAria': 'Bereich des Eingabeverlaufs',
   'settings.openchamber.visual.option.inputHistoryScope.global.label': 'Alle Projekte',
   'settings.openchamber.visual.option.inputHistoryScope.session.label': 'Aktuelle Sitzung',
+  'settings.openchamber.visual.field.inputHistoryLimit': 'Zu merkende Prompts',
+  'settings.openchamber.visual.field.inputHistoryLimitDescription': 'Wenn Sie diese Zahl verringern, werden ältere Prompts sofort aus Ihrem Verlauf entfernt.',
+  'settings.openchamber.visual.field.inputHistoryLimitAria': 'Zu merkende Prompts',
+  'settings.openchamber.visual.field.inputHistoryLimitUnit': 'Prompts',
 
   'settings.providers.page.quotaCredentials.accessToken': 'Zugriffstoken',
   'settings.providers.page.quotaCredentials.usageToken': 'Nutzungs-API-Token',

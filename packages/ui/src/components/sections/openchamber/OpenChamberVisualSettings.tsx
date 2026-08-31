@@ -61,7 +61,12 @@ import {
 import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import type { TerminalShellOption } from '@/lib/api/types';
-import type { InputHistoryScope } from '@/lib/inputHistoryScope';
+import {
+    MAX_INPUT_HISTORY_LIMIT,
+    MIN_INPUT_HISTORY_LIMIT,
+    isInputHistoryLimit,
+    type InputHistoryScope,
+} from '@/lib/inputHistoryScope';
 import { isTerminalShell } from '@/lib/terminalShell';
 import { subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 import { formatShortcutForDisplay } from '@/lib/shortcuts';
@@ -298,7 +303,7 @@ const normalizeUserMessageRenderingMode = (mode: unknown): 'markdown' | 'plain' 
     return mode === 'markdown' ? 'markdown' : 'plain';
 };
 
-type VisibleSetting = 'sessionAssist' | 'sessionGoal' | 'theme' | 'windowControlsPosition' | 'pwaInstallName' | 'pwaOrientation' | 'mobileKeyboardMode' | 'timeFormat' | 'weekStart' | 'fontSize' | 'terminalFontSize' | 'terminalShell' | 'terminalLoginShell' | 'editorFontSize' | 'spacing' | 'inputBarOffset' | 'mermaidRendering' | 'userMessageRendering' | 'chatRenderMode' | 'messageTransport' | 'activityRenderMode' | 'collapsibleUserMessages' | 'stickyUserHeader' | 'promptNavigatorEnabled' | 'wideChatLayout' | 'codeBlockLineWrap' | 'splitAssistantMessageActions' | 'subagentReadOnlyBanner' | 'diffLayout' | 'mobileStatusBar' | 'dotfiles' | 'fileViewerPreview' | 'reasoning' | 'showToolFileIcons' | 'showTurnChangedFiles' | 'expandedTools' | 'followUpBehavior' | 'inputHistoryScope' | 'terminalQuickKeys' | 'fileEditorKeymap' | 'persistDraft' | 'inputSpellcheck' | 'largeTextPaste' | 'reportUsage' | 'autoSaveEnabled' | 'sessionTabs';
+type VisibleSetting = 'sessionAssist' | 'sessionGoal' | 'theme' | 'windowControlsPosition' | 'pwaInstallName' | 'pwaOrientation' | 'mobileKeyboardMode' | 'timeFormat' | 'weekStart' | 'fontSize' | 'terminalFontSize' | 'terminalShell' | 'terminalLoginShell' | 'editorFontSize' | 'spacing' | 'inputBarOffset' | 'mermaidRendering' | 'userMessageRendering' | 'chatRenderMode' | 'messageTransport' | 'activityRenderMode' | 'collapsibleUserMessages' | 'stickyUserHeader' | 'promptNavigatorEnabled' | 'wideChatLayout' | 'codeBlockLineWrap' | 'splitAssistantMessageActions' | 'subagentReadOnlyBanner' | 'diffLayout' | 'mobileStatusBar' | 'dotfiles' | 'fileViewerPreview' | 'reasoning' | 'showToolFileIcons' | 'showTurnChangedFiles' | 'expandedTools' | 'followUpBehavior' | 'inputHistoryScope' | 'inputHistoryLimit' | 'terminalQuickKeys' | 'fileEditorKeymap' | 'persistDraft' | 'inputSpellcheck' | 'largeTextPaste' | 'reportUsage' | 'autoSaveEnabled' | 'sessionTabs';
 
 const WINDOW_CONTROLS_POSITION_OPTIONS: Array<{ id: DesktopWindowControlsPosition; labelKey: string }> = [
     { id: 'left', labelKey: 'settings.openchamber.desktopNetwork.option.windowControlsLeft' },
@@ -390,7 +395,9 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     const followUpBehavior = useMessageQueueStore(state => state.followUpBehavior);
     const setFollowUpBehavior = useMessageQueueStore(state => state.setFollowUpBehavior);
     const inputHistoryScope = useInputHistoryStore(state => state.scope);
+    const inputHistoryLimit = useInputHistoryStore(state => state.entryLimit);
     const applyInputHistoryScope = useInputHistoryStore(state => state.applyScope);
+    const applyInputHistoryLimit = useInputHistoryStore(state => state.applyEntryLimit);
     const persistChatDraft = useUIStore(state => state.persistChatDraft);
     const setPersistChatDraft = useUIStore(state => state.setPersistChatDraft);
     const inputSpellcheckEnabled = useUIStore(state => state.inputSpellcheckEnabled);
@@ -571,6 +578,15 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         void updateDesktopSettings({ inputHistoryScope: scope });
     }, [applyInputHistoryScope]);
 
+    const handleInputHistoryLimitChange = React.useCallback((value: number) => {
+        const nextLimit = Math.round(value);
+        if (!isInputHistoryLimit(nextLimit)) {
+            return;
+        }
+        applyInputHistoryLimit(nextLimit);
+        void updateDesktopSettings({ inputHistoryLimit: nextLimit });
+    }, [applyInputHistoryLimit]);
+
     const handleActivityRenderModeChange = React.useCallback((mode: 'collapsed' | 'summary') => {
         setActivityRenderMode(mode);
         void updateDesktopSettings({ activityRenderMode: mode });
@@ -679,6 +695,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         || shouldShow('reasoning')
         || shouldShow('followUpBehavior')
         || shouldShow('inputHistoryScope')
+        || shouldShow('inputHistoryLimit')
         || shouldShow('persistDraft')
         || shouldShow('largeTextPaste')
         || shouldShow('showToolFileIcons')
@@ -691,7 +708,8 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         || shouldShow('mermaidRendering')
         || (shouldShow('diffLayout') && !isVSCode)
         || shouldShow('followUpBehavior')
-        || shouldShow('inputHistoryScope');
+        || shouldShow('inputHistoryScope')
+        || shouldShow('inputHistoryLimit');
     const showBehaviorFeatureCheckboxes = shouldShow('sessionAssist')
         || (shouldShow('sessionGoal') && !isVSCode)
         || shouldShow('subagentReadOnlyBanner')
@@ -1784,6 +1802,31 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                                     />
                                                 ))}
                                             </SettingsRadioGroup>
+                                        </SettingsControlGroup>
+                                    )}
+
+                                    {shouldShow('inputHistoryLimit') && (
+                                        <SettingsControlGroup
+                                            title={t('settings.openchamber.visual.field.inputHistoryLimit')}
+                                            info={t('settings.openchamber.visual.field.inputHistoryLimitDescription')}
+                                            contentClassName={SETTINGS_CONTROL_CLUSTER_CLASS}
+                                            settingsItem="chat.input-history-limit"
+                                        >
+                                            <div className={SETTINGS_NUMBER_STEPPER_ROW_CLASS}>
+                                                <NumberInput
+                                                    value={inputHistoryLimit}
+                                                    onValueChange={handleInputHistoryLimitChange}
+                                                    min={MIN_INPUT_HISTORY_LIMIT}
+                                                    max={MAX_INPUT_HISTORY_LIMIT}
+                                                    step={1}
+                                                    className={SETTINGS_NUMBER_INPUT_CLASS}
+                                                    deferExternalValueWhileFocused
+                                                    aria-label={t('settings.openchamber.visual.field.inputHistoryLimitAria')}
+                                                />
+                                                <span className={SETTINGS_NUMBER_UNIT_CLASS}>
+                                                    {t('settings.openchamber.visual.field.inputHistoryLimitUnit')}
+                                                </span>
+                                            </div>
                                         </SettingsControlGroup>
                                     )}
                                 </SettingsTwoColumn>

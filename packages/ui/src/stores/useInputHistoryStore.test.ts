@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 
 import {
+  DEFAULT_INPUT_HISTORY_LIMIT,
   DEFAULT_INPUT_HISTORY_SCOPE,
+  isInputHistoryLimit,
   isInputHistoryScope,
 } from '@/lib/inputHistoryScope';
 import type { AttachedFile } from '@/stores/types/sessionTypes';
@@ -31,6 +33,38 @@ const createFakeStorage = (): Storage => {
     },
   };
   return storage;
+};
+
+const createQuotaStorage = (maxEntriesPerBucket: number): Storage => {
+  const store = new Map<string, string>();
+  return {
+    getItem: (key) => store.get(key) ?? null,
+    setItem: (key, value) => {
+      // SAFETY: this test storage only reads back envelopes that this suite serialized.
+      const parsed = JSON.parse(String(value)) as {
+        global?: Record<string, { entries?: unknown[] }>;
+        session?: Record<string, { entries?: unknown[] }>;
+      };
+      const counts = [
+        ...Object.values(parsed.global ?? {}).map((bucket) => bucket.entries?.length ?? 0),
+        ...Object.values(parsed.session ?? {}).map((bucket) => bucket.entries?.length ?? 0),
+      ];
+      if (counts.some((count) => count > maxEntriesPerBucket)) {
+        throw new DOMException('Quota exceeded', 'QuotaExceededError');
+      }
+      store.set(key, String(value));
+    },
+    removeItem: (key) => {
+      store.delete(key);
+    },
+    clear: () => {
+      store.clear();
+    },
+    key: (index) => Array.from(store.keys())[index] ?? null,
+    get length() {
+      return store.size;
+    },
+  };
 };
 
 const installWindow = (localStorage: Storage): void => {
@@ -84,7 +118,9 @@ describe('useInputHistoryStore', () => {
 
     expect(identity).not.toBeNull();
     expect(DEFAULT_INPUT_HISTORY_SCOPE).toBe('global');
+    expect(DEFAULT_INPUT_HISTORY_LIMIT).toBe(40);
     expect(mod.useInputHistoryStore.getState().scope).toBe('global');
+    expect(mod.useInputHistoryStore.getState().entryLimit).toBe(DEFAULT_INPUT_HISTORY_LIMIT);
     expect(mod.selectInputHistoryEntries(mod.useInputHistoryStore.getState(), identity!)).toEqual([]);
   });
 
@@ -193,13 +229,20 @@ describe('useInputHistoryStore', () => {
     ]);
   });
 
-  test('validates runtime, directory, and session identity inputs', async () => {
+  test('validates scope, limit, runtime, directory, and session identity inputs', async () => {
     installWindow(createFakeStorage());
     const mod = await importStoreModule();
 
     expect(isInputHistoryScope('global')).toBe(true);
     expect(isInputHistoryScope('session')).toBe(true);
     expect(isInputHistoryScope('other')).toBe(false);
+    expect(isInputHistoryLimit(1)).toBe(true);
+    expect(isInputHistoryLimit(40)).toBe(true);
+    expect(isInputHistoryLimit(100)).toBe(true);
+    expect(isInputHistoryLimit(0)).toBe(false);
+    expect(isInputHistoryLimit(101)).toBe(false);
+    expect(isInputHistoryLimit(1.5)).toBe(false);
+    expect(isInputHistoryLimit(Number.NaN)).toBe(false);
     expect(mod.createInputHistoryIdentity('', '/repo', 'session-1')).toBeNull();
     expect(mod.createInputHistoryIdentity('runtime-a', '   ', 'session-1')).toBeNull();
     expect(mod.createInputHistoryIdentity('runtime-a', '/repo', '')).toBeNull();
@@ -359,6 +402,90 @@ describe('useInputHistoryStore', () => {
     expect(entries.at(-1)?.text).toBe('entry-44');
   });
 
+  test('preserves a persisted entry limit above forty at startup', async () => {
+    const localStorage = createFakeStorage();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      version: 1,
+      scope: 'global',
+      entryLimit: 100,
+      global: {
+        [JSON.stringify(['runtime-a'])]: {
+          touchedAt: 10,
+          entries: Array.from({ length: 45 }, (_, index) => ({
+            text: `entry-${index}`,
+            attachmentKeys: [],
+            restorableAttachments: [],
+            submittedAt: index + 1,
+          })),
+        },
+      },
+      session: {},
+    }));
+    installWindow(localStorage);
+
+    const mod = await importStoreModule();
+    const identity = mod.createInputHistoryIdentity('runtime-a', '/repo', 'session-1');
+    if (!identity) throw new Error('identity missing');
+
+    expect(mod.useInputHistoryStore.getState().entryLimit).toBe(100);
+    expect(mod.selectInputHistoryEntries(mod.useInputHistoryStore.getState(), identity)).toHaveLength(45);
+    expect(mod.selectInputHistoryEntries(mod.useInputHistoryStore.getState(), identity)[0]?.text).toBe('entry-0');
+  });
+
+  test('applies a lower entry limit immediately to global and session buckets', async () => {
+    installWindow(createFakeStorage());
+    const mod = await importStoreModule();
+    const first = mod.createInputHistoryIdentity('runtime-a', '/repo', 'session-1');
+    const second = mod.createInputHistoryIdentity('runtime-a', '/repo', 'session-2');
+    if (!first || !second) throw new Error('identity missing');
+
+    mod.useInputHistoryStore.getState().appendSubmissions(first, Array.from({ length: 4 }, (_, index) => (
+      mod.createInputHistorySubmission(`first-${index}`, [])
+    )));
+    mod.useInputHistoryStore.getState().appendSubmissions(second, [
+      mod.createInputHistorySubmission('second-0', []),
+      mod.createInputHistorySubmission('second-1', []),
+    ]);
+
+    mod.useInputHistoryStore.getState().applyEntryLimit(2);
+
+    expect(mod.useInputHistoryStore.getState().entryLimit).toBe(2);
+    mod.useInputHistoryStore.getState().applyScope('global');
+    expect(mod.selectInputHistoryEntries(mod.useInputHistoryStore.getState(), first).map((entry) => entry.text)).toEqual([
+      'second-0',
+      'second-1',
+    ]);
+    mod.useInputHistoryStore.getState().applyScope('session');
+    expect(mod.selectInputHistoryEntries(mod.useInputHistoryStore.getState(), first).map((entry) => entry.text)).toEqual([
+      'first-2',
+      'first-3',
+    ]);
+    expect(mod.selectInputHistoryEntries(mod.useInputHistoryStore.getState(), second).map((entry) => entry.text)).toEqual([
+      'second-0',
+      'second-1',
+    ]);
+  });
+
+  test('ignores invalid entry limits without mutating history', async () => {
+    installWindow(createFakeStorage());
+    const mod = await importStoreModule();
+    const identity = mod.createInputHistoryIdentity('runtime-a', '/repo', 'session-1');
+    if (!identity) throw new Error('identity missing');
+
+    mod.useInputHistoryStore.getState().appendSubmissions(identity, [
+      mod.createInputHistorySubmission('kept-0', []),
+      mod.createInputHistorySubmission('kept-1', []),
+    ]);
+
+    mod.useInputHistoryStore.getState().applyEntryLimit(0);
+
+    expect(mod.useInputHistoryStore.getState().entryLimit).toBe(DEFAULT_INPUT_HISTORY_LIMIT);
+    expect(mod.selectInputHistoryEntries(mod.useInputHistoryStore.getState(), identity).map((entry) => entry.text)).toEqual([
+      'kept-0',
+      'kept-1',
+    ]);
+  });
+
   test('keeps only the eight most recent global namespaces', async () => {
     installWindow(createFakeStorage());
     const mod = await importStoreModule();
@@ -481,6 +608,28 @@ describe('useInputHistoryStore', () => {
     expect(observer.selectInputHistoryEntries(observer.useInputHistoryStore.getState(), second).map((entry) => entry.text)).toEqual(['from B']);
   });
 
+  test('stale tab append uses the newest durable entry limit', async () => {
+    const localStorage = createFakeStorage();
+    installWindow(localStorage);
+    const tabA = await importStoreModule();
+    const tabB = await importStoreModule();
+    const identity = tabA.createInputHistoryIdentity('runtime-a', '/repo', 'session-a');
+    if (!identity) throw new Error('identity missing');
+
+    tabB.useInputHistoryStore.getState().applyEntryLimit(2);
+    tabA.useInputHistoryStore.getState().appendSubmissions(identity, Array.from({ length: 5 }, (_, index) => (
+      tabA.createInputHistorySubmission(`entry-${index}`, [])
+    )));
+
+    const observer = await importStoreModule();
+    expect(observer.useInputHistoryStore.getState().entryLimit).toBe(2);
+    observer.useInputHistoryStore.getState().applyScope('session');
+    expect(observer.selectInputHistoryEntries(observer.useInputHistoryStore.getState(), identity).map((entry) => entry.text)).toEqual([
+      'entry-3',
+      'entry-4',
+    ]);
+  });
+
   test('stale tab scope change preserves newer history buckets', async () => {
     const localStorage = createFakeStorage();
     installWindow(localStorage);
@@ -539,5 +688,22 @@ describe('useInputHistoryStore', () => {
       'deleted',
       'retained',
     ]);
+  });
+
+  test('quota fallback preserves the configured entry limit while storing fewer entries', async () => {
+    installWindow(createQuotaStorage(25));
+    const mod = await importStoreModule();
+    const identity = mod.createInputHistoryIdentity('runtime-a', '/repo', 'session-1');
+    if (!identity) throw new Error('identity missing');
+
+    mod.useInputHistoryStore.getState().applyEntryLimit(100);
+    mod.useInputHistoryStore.getState().appendSubmissions(identity, Array.from({ length: 30 }, (_, index) => (
+      mod.createInputHistorySubmission(`entry-${index}`, [])
+    )));
+
+    const observer = await importStoreModule();
+    expect(observer.useInputHistoryStore.getState().entryLimit).toBe(100);
+    expect(observer.selectInputHistoryEntries(observer.useInputHistoryStore.getState(), identity)).toHaveLength(25);
+    expect(observer.selectInputHistoryEntries(observer.useInputHistoryStore.getState(), identity)[0]?.text).toBe('entry-5');
   });
 });

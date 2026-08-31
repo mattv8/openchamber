@@ -16,7 +16,9 @@ import { loadAppearancePreferences, applyAppearancePreferences } from '@/lib/app
 import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 import { sanitizeStarterRefs } from '@/lib/draftStarters';
 import {
+  DEFAULT_INPUT_HISTORY_LIMIT,
   DEFAULT_INPUT_HISTORY_SCOPE,
+  isInputHistoryLimit,
   isInputHistoryScope,
 } from '@/lib/inputHistoryScope';
 import {
@@ -84,6 +86,7 @@ const persistRuntimeSettingsMirror = (settings: DesktopSettings, runtimeKey: str
     mobileKeyboardMode: settings.mobileKeyboardMode,
     openCodeUpdateToastDismissedVersion: settings.openCodeUpdateToastDismissedVersion,
     inputHistoryScope: settings.inputHistoryScope,
+    inputHistoryLimit: settings.inputHistoryLimit,
     dictationEnabled: settings.dictationEnabled,
     sttProvider: settings.sttProvider,
     sttServerUrl: settings.sttServerUrl,
@@ -602,6 +605,7 @@ const materializeAuthoritativeUiSettings = (settings: DesktopSettings): DesktopS
     collapsibleUserMessages: defaults.collapsibleUserMessages,
     messageStreamTransport: 'auto',
     inputHistoryScope: DEFAULT_INPUT_HISTORY_SCOPE,
+    inputHistoryLimit: DEFAULT_INPUT_HISTORY_LIMIT,
     stickyUserHeader: defaults.stickyUserHeader,
     promptNavigatorEnabled: defaults.promptNavigatorEnabled,
     wideChatLayoutEnabled: defaults.wideChatLayoutEnabled,
@@ -871,6 +875,9 @@ const applyDesktopUiPreferences = (settings: DesktopSettings) => {
     && settings.inputHistoryScope !== inputHistoryStore.scope
   ) {
     inputHistoryStore.applyScope(settings.inputHistoryScope);
+  }
+  if (isInputHistoryLimit(settings.inputHistoryLimit) && settings.inputHistoryLimit !== inputHistoryStore.entryLimit) {
+    inputHistoryStore.applyEntryLimit(settings.inputHistoryLimit);
   }
   if (typeof settings.stickyUserHeader === 'boolean' && settings.stickyUserHeader !== store.stickyUserHeader) {
     store.setStickyUserHeader(settings.stickyUserHeader);
@@ -1200,6 +1207,9 @@ const sanitizeWebSettings = (payload: unknown): DesktopSettings | null => {
   }
   if (typeof candidate.inputHistoryScope === 'string' && isInputHistoryScope(candidate.inputHistoryScope)) {
     result.inputHistoryScope = candidate.inputHistoryScope;
+  }
+  if (typeof candidate.inputHistoryLimit === 'number' && isInputHistoryLimit(candidate.inputHistoryLimit)) {
+    result.inputHistoryLimit = candidate.inputHistoryLimit;
   }
   if (typeof candidate.sessionRecapEnabled === 'boolean') {
     result.sessionRecapEnabled = candidate.sessionRecapEnabled;

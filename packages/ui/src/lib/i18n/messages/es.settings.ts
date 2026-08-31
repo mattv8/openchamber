@@ -2238,6 +2238,10 @@ export const settingsDict = {
   "settings.openchamber.visual.section.inputHistoryScopeAria": "Alcance del historial de entrada",
   "settings.openchamber.visual.option.inputHistoryScope.global.label": "Todos los proyectos",
   "settings.openchamber.visual.option.inputHistoryScope.session.label": "Sesión actual",
+  "settings.openchamber.visual.field.inputHistoryLimit": "Prompts que recordar",
+  "settings.openchamber.visual.field.inputHistoryLimitDescription": "Bajar este número elimina de inmediato los prompts más antiguos de tu historial.",
+  "settings.openchamber.visual.field.inputHistoryLimitAria": "Prompts que recordar",
+  "settings.openchamber.visual.field.inputHistoryLimitUnit": "prompts",
   ...linearIntegrationI18n.es,
   ...thirdPartyIntegrationI18n.es,
 } as const;

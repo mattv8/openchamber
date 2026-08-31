@@ -2238,6 +2238,10 @@ export const settingsDict = {
   'settings.openchamber.visual.section.inputHistoryScopeAria': '입력 기록 범위',
   'settings.openchamber.visual.option.inputHistoryScope.global.label': '모든 프로젝트',
   'settings.openchamber.visual.option.inputHistoryScope.session.label': '현재 세션',
+  'settings.openchamber.visual.field.inputHistoryLimit': '기억할 프롬프트 수',
+  'settings.openchamber.visual.field.inputHistoryLimitDescription': '이 숫자를 낮추면 기록에서 오래된 프롬프트가 바로 삭제됩니다.',
+  'settings.openchamber.visual.field.inputHistoryLimitAria': '기억할 프롬프트 수',
+  'settings.openchamber.visual.field.inputHistoryLimitUnit': '개',
   ...linearIntegrationI18n.ko,
   ...thirdPartyIntegrationI18n.ko,
 } as const;
