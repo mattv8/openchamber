@@ -261,6 +261,7 @@ interface ControlledHandle {
   getButtonDisabled(label: string): boolean;
   getInputValue(): string;
   focusInput(): void;
+  pressEnter(): void;
   typeInput(value: string): void;
   blurInput(): void;
   unmount(): void;
@@ -347,6 +348,7 @@ function mountControlled(props: ControlledProps): ControlledHandle {
     onChange: (event: { target: { value: string } }) => void;
     onFocus?: () => void;
     onBlur: () => void;
+    onKeyDown: (event: { key: string; defaultPrevented: boolean }) => void;
   } {
     const input = findInputNode();
     const propsKey = Object.keys(input).find((k) => k.startsWith("__reactProps"));
@@ -356,6 +358,7 @@ function mountControlled(props: ControlledProps): ControlledHandle {
       onChange: (event: { target: { value: string } }) => void;
       onFocus?: () => void;
       onBlur: () => void;
+      onKeyDown: (event: { key: string; defaultPrevented: boolean }) => void;
     }>)[propsKey];
   }
 
@@ -389,6 +392,12 @@ function mountControlled(props: ControlledProps): ControlledHandle {
       doc.activeElement = input;
       act(() => {
         props.onFocus?.();
+      });
+    },
+    pressEnter() {
+      const props = readInputProps();
+      act(() => {
+        props.onKeyDown({ key: "Enter", defaultPrevented: false });
       });
     },
     typeInput(value: string) {
@@ -574,6 +583,26 @@ describe("NumberInput rapid-click stepper", () => {
         expect(handle.getInputValue()).toBe("100");
 
         handle.blurInput();
+
+        expect(handle.recorded).toEqual([100]);
+      }
+    );
+  });
+
+  test("focused draft commits once when Enter settles it", () => {
+    withHandle(
+      {
+        initialValue: 40,
+        min: 1,
+        max: 100,
+        step: 1,
+        deferExternalValueWhileFocused: true,
+      },
+      (handle) => {
+        handle.focusInput();
+        handle.typeInput("100");
+
+        handle.pressEnter();
 
         expect(handle.recorded).toEqual([100]);
       }

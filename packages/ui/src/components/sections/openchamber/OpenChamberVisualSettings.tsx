@@ -1808,7 +1808,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                     {shouldShow('inputHistoryLimit') && (
                                         <SettingsControlGroup
                                             title={t('settings.openchamber.visual.field.inputHistoryLimit')}
-                                            info={t('settings.openchamber.visual.field.inputHistoryLimitDescription')}
+                                            description={t('settings.openchamber.visual.field.inputHistoryLimitDescription')}
                                             contentClassName={SETTINGS_CONTROL_CLUSTER_CLASS}
                                             settingsItem="chat.input-history-limit"
                                         >
