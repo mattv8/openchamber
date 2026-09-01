@@ -1,17 +1,37 @@
-import type { CreateTerminalOptions, TerminalError, TerminalHandlers, TerminalServerSession, TerminalSession, TerminalShellOption, TerminalStreamEvent } from './api/types';
+import type { CreateTerminalOptions, TerminalError, TerminalHandlers, TerminalServerSession, TerminalSession, TerminalSessionPurpose, TerminalShellOption, TerminalStreamEvent } from './api/types';
 import { openRuntimeWebSocket } from './relay/runtime-socket';
 import type { RelayTunnelWebSocket } from './relay/tunnel-client';
 import { runtimeFetch } from './runtime-fetch';
 import { getRuntimeUrlResolver } from './runtime-url';
 import { clearRuntimeUrlAuthToken, refreshRuntimeUrlAuthToken } from './runtime-auth';
 import { isTerminalShell } from './terminalShell';
+import { z } from 'zod';
 
-type Message = Record<string, unknown> & { t: string; s?: string; q?: number };
+type Message = Record<string, unknown> & {
+  t: string;
+  s?: string;
+  q?: number;
+  d?: string;
+  r?: string;
+  history?: string;
+  status?: TerminalStreamEvent['status'];
+  exitCode?: number;
+  signal?: number | null;
+  runtime?: TerminalStreamEvent['runtime'];
+  ptyBackend?: string;
+  mode?: TerminalSession['mode'];
+  purpose?: TerminalSessionPurposeInput;
+  message?: string;
+  code?: string;
+  fatal?: boolean;
+};
 type Subscriber = { handlers: TerminalHandlers; lastSequence: number };
 type TerminalProjection = {
   sequence: number;
   history: string;
   status: TerminalStreamEvent['status'];
+  mode?: TerminalSession['mode'];
+  purpose?: TerminalSessionPurpose;
   exitCode?: number;
   signal?: number | null;
   runtime?: TerminalStreamEvent['runtime'];
@@ -30,6 +50,42 @@ const SOCKET_OPEN = 1;
 const IDLE_SOCKET_GRACE_MS = 15_000;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const terminalModeSchema = z.enum(['interactive', 'command']);
+const terminalStatusSchema = z.enum(['running', 'exited', 'error']);
+const terminalRuntimeSchema = z.enum(['node', 'bun']);
+type TerminalSessionPurposeInput =
+  | TerminalSessionPurpose
+  | { type: 'project-action'; actionId: string; executionId?: string }
+  | null
+  | undefined;
+type TerminalSessionInput = {
+  sessionId?: string;
+  cols?: number;
+  rows?: number;
+  status?: 'running' | 'exited' | 'error';
+  mode?: 'interactive' | 'command';
+  purpose?: TerminalSessionPurposeInput;
+} | null | undefined;
+const terminalSessionPurposeSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('terminal') }),
+  z.object({ type: z.literal('project-action'), actionId: z.string(), executionId: z.string() }),
+]);
+const terminalSessionSchema = z.object({
+  sessionId: z.string(),
+  cols: z.number(),
+  rows: z.number(),
+  status: terminalStatusSchema,
+  mode: terminalModeSchema.optional(),
+  purpose: terminalSessionPurposeSchema.optional(),
+});
+const terminalServerSessionSchema = z.object({
+  sessionId: z.string(),
+  cwd: z.string(),
+  status: z.enum(['running', 'exited']),
+  createdAt: z.number().nullable().optional().transform((value) => value ?? null),
+  mode: terminalModeSchema.optional(),
+  purpose: terminalSessionPurposeSchema.optional(),
+});
 
 const encode = (message: Message): Uint8Array => {
   const payload = encoder.encode(JSON.stringify(message));
@@ -61,6 +117,28 @@ const trimProjection = (value: string): string => {
   let start = bytes.byteLength - MAX_PROJECTION_BYTES;
   while (start < bytes.byteLength && (bytes[start] & 0xc0) === 0x80) start += 1;
   return decoder.decode(bytes.subarray(start));
+};
+
+const terminalSessionListSchema = z.object({ sessions: z.array(z.unknown()) });
+
+const parseTerminalMode = (value: TerminalSession['mode'] | null | undefined): TerminalSession['mode'] | undefined => {
+  return terminalModeSchema.safeParse(value).data;
+};
+
+const parseTerminalStatus = (value: TerminalStreamEvent['status'] | null | undefined): TerminalStreamEvent['status'] => {
+  return terminalStatusSchema.safeParse(value).data ?? 'running';
+};
+
+const parseTerminalRuntime = (value: TerminalStreamEvent['runtime'] | null | undefined): TerminalStreamEvent['runtime'] | undefined => {
+  return terminalRuntimeSchema.safeParse(value).data;
+};
+
+export const parseTerminalSessionPurpose = (value: TerminalSessionPurposeInput): TerminalSessionPurpose | undefined => {
+  return terminalSessionPurposeSchema.safeParse(value).data;
+};
+
+export const parseTerminalSession = (value: TerminalSessionInput): TerminalSession | null => {
+  return terminalSessionSchema.safeParse(value).data ?? null;
 };
 
 type TerminalTransportDependencies = {
@@ -98,7 +176,7 @@ export class TerminalTransport {
     const projection = this.projections.get(sessionId);
     if (projection) {
       subscriber.lastSequence = projection.sequence;
-      handlers.onEvent({ type: 'snapshot', sequence: projection.sequence, data: projection.history, status: projection.status, exitCode: projection.exitCode, signal: projection.signal, runtime: projection.runtime, ptyBackend: projection.ptyBackend });
+      handlers.onEvent({ type: 'snapshot', sequence: projection.sequence, data: projection.history, status: projection.status, mode: projection.mode, purpose: projection.purpose, exitCode: projection.exitCode, signal: projection.signal, runtime: projection.runtime, ptyBackend: projection.ptyBackend });
     }
     const socketWasOpen = this.socket?.readyState === SOCKET_OPEN;
     this.ensureConnected().then(() => {
@@ -267,18 +345,20 @@ export class TerminalTransport {
     if (!subscribers) return;
     if (message.t === 'snapshot') {
       const projection: TerminalProjection = {
-        sequence: typeof message.q === 'number' ? message.q : 0,
-        history: typeof message.history === 'string' ? message.history : '',
-        status: message.status as TerminalStreamEvent['status'],
-        exitCode: typeof message.exitCode === 'number' ? message.exitCode : undefined,
-        signal: typeof message.signal === 'number' ? message.signal : null,
-        runtime: message.runtime as TerminalStreamEvent['runtime'],
-        ptyBackend: typeof message.ptyBackend === 'string' ? message.ptyBackend : undefined,
+        sequence: message.q ?? 0,
+        history: message.history ?? '',
+        status: parseTerminalStatus(message.status),
+        mode: parseTerminalMode(message.mode),
+        purpose: parseTerminalSessionPurpose(message.purpose),
+        exitCode: message.exitCode,
+        signal: message.signal ?? null,
+        runtime: parseTerminalRuntime(message.runtime),
+        ptyBackend: message.ptyBackend,
       };
       this.projections.set(message.s, projection);
       for (const sub of subscribers) {
         sub.lastSequence = projection.sequence;
-        sub.handlers.onEvent({ type: 'snapshot', sequence: projection.sequence, data: projection.history, status: projection.status, exitCode: projection.exitCode, signal: projection.signal, runtime: projection.runtime, ptyBackend: projection.ptyBackend });
+        sub.handlers.onEvent({ type: 'snapshot', sequence: projection.sequence, data: projection.history, status: projection.status, mode: projection.mode, purpose: projection.purpose, exitCode: projection.exitCode, signal: projection.signal, runtime: projection.runtime, ptyBackend: projection.ptyBackend });
       }
       return;
     }
@@ -287,14 +367,14 @@ export class TerminalTransport {
     if (previous && message.q > previous.sequence) {
       if (message.t === 'output') this.projections.set(message.s, { ...previous, sequence: message.q, history: trimProjection(previous.history + (typeof message.r === 'string' ? message.r : (typeof message.d === 'string' ? message.d : ''))) });
       else if (message.t === 'exit') this.projections.set(message.s, { ...previous, sequence: message.q, status: 'exited', exitCode: typeof message.exitCode === 'number' ? message.exitCode : undefined, signal: typeof message.signal === 'number' ? message.signal : null });
-      else if (message.t === 'restarted') this.projections.set(message.s, { ...previous, sequence: message.q, history: typeof message.history === 'string' ? message.history : '', status: 'running', exitCode: undefined, signal: null });
+      else if (message.t === 'restarted') this.projections.set(message.s, { ...previous, sequence: message.q, history: message.history ?? '', status: 'running', mode: parseTerminalMode(message.mode) ?? previous.mode, purpose: parseTerminalSessionPurpose(message.purpose) ?? previous.purpose, exitCode: undefined, signal: null });
     }
     for (const sub of subscribers) {
       if (message.q <= sub.lastSequence) continue;
       sub.lastSequence = message.q;
       if (message.t === 'output') sub.handlers.onEvent({ type: 'data', sequence: message.q, data: typeof message.d === 'string' ? message.d : '', replayData: typeof message.r === 'string' ? message.r : undefined });
       else if (message.t === 'exit') sub.handlers.onEvent({ type: 'exit', sequence: message.q, exitCode: typeof message.exitCode === 'number' ? message.exitCode : undefined, signal: typeof message.signal === 'number' ? message.signal : null });
-      else if (message.t === 'restarted') sub.handlers.onEvent({ type: 'snapshot', sequence: message.q, data: typeof message.history === 'string' ? message.history : '', status: 'running' });
+      else if (message.t === 'restarted') sub.handlers.onEvent({ type: 'snapshot', sequence: message.q, data: message.history ?? '', status: 'running', mode: parseTerminalMode(message.mode) ?? previous?.mode, purpose: parseTerminalSessionPurpose(message.purpose) ?? previous?.purpose });
     }
   }
 
@@ -354,27 +434,23 @@ let transport = new TerminalTransport();
 export async function createTerminalSession(options: CreateTerminalOptions): Promise<TerminalSession> {
   const response = await runtimeFetch('/api/terminal/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(options) });
   if (!response.ok) throw await responseError(response, 'Failed to create terminal session');
-  return response.json() as Promise<TerminalSession>;
+  const payload: unknown = await response.json().catch(() => null);
+  const parsed = terminalSessionSchema.safeParse(payload).data;
+  if (!parsed) throw new Error('Failed to create terminal session');
+  return parsed;
 }
 export async function listTerminalSessions(cwd: string): Promise<TerminalServerSession[]> {
   const response = await runtimeFetch(`/api/terminal/sessions?cwd=${encodeURIComponent(cwd)}`);
   if (!response.ok) throw await responseError(response, 'Failed to list terminal sessions');
   const payload: unknown = await response.json().catch(() => null);
-  const rawSessions = payload && typeof payload === 'object' && 'sessions' in payload ? payload.sessions : null;
+  const rawSessions = terminalSessionListSchema.safeParse(payload).data?.sessions;
   if (!Array.isArray(rawSessions)) throw new Error('Failed to list terminal sessions');
   const parsed: TerminalServerSession[] = [];
-  for (const entry of rawSessions as unknown[]) {
-    if (typeof entry !== 'object' || entry === null) continue;
-    // SAFETY: every field is verified below before the value is used.
-    const candidate = entry as Partial<Record<keyof TerminalServerSession, unknown>>;
-    if (typeof candidate.sessionId !== 'string' || typeof candidate.cwd !== 'string') continue;
-    if (candidate.status !== 'running' && candidate.status !== 'exited') continue;
-    parsed.push({
-      sessionId: candidate.sessionId,
-      cwd: candidate.cwd,
-      status: candidate.status,
-      createdAt: typeof candidate.createdAt === 'number' ? candidate.createdAt : null,
-    });
+  for (const entry of rawSessions) {
+    const session = terminalServerSessionSchema.safeParse(entry).data;
+    if (session) {
+      parsed.push(session);
+    }
   }
   return parsed;
 }
