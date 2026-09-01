@@ -354,11 +354,11 @@ export const ProjectActionsSection: React.FC<ProjectActionsSectionProps> = ({ pr
                         </SettingsInfoHint>
                       </div>
                       <Select
-                        value={action.runIn === 'worktree' ? 'worktree' : PROJECT_RUN_IN_PARENT_VALUE}
+                        value={action.runIn === 'parent' ? PROJECT_RUN_IN_PARENT_VALUE : 'worktree'}
                         onValueChange={(value) => {
                           updateAction(action.id, (current) => {
-                            if (value === 'worktree') {
-                              return { ...current, runIn: 'worktree' };
+                            if (value === PROJECT_RUN_IN_PARENT_VALUE) {
+                              return { ...current, runIn: 'parent' };
                             }
 
                             return { ...current, runIn: undefined };

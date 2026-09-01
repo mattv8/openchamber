@@ -56,13 +56,13 @@ describe('project actions config sanitization', () => {
     files = new Map();
   });
 
-  test('round-trips runIn worktree through saved project actions state', async () => {
+  test('round-trips runIn parent through saved project actions state', async () => {
     const saved = await saveProjectActionsState(project, {
       actions: [{
         id: 'action-1',
         name: 'Run action',
         command: 'pnpm dev',
-        runIn: 'worktree',
+        runIn: 'parent',
       }],
       primaryActionId: 'action-1',
     });
@@ -77,8 +77,52 @@ describe('project actions config sanitization', () => {
         name: 'Run action',
         command: 'pnpm dev',
         icon: null,
-        runIn: 'worktree',
+        runIn: 'parent',
       }],
+      primaryActionId: 'action-1',
+    });
+  });
+
+  test('keeps runIn omitted when saving project actions in the current worktree', async () => {
+    const saved = await saveProjectActionsState(project, {
+      actions: [{
+        id: 'action-1',
+        name: 'Run action',
+        command: 'pnpm dev',
+      }],
+      primaryActionId: 'action-1',
+    });
+
+    expect(saved).toBe(true);
+
+    const state = await getProjectActionsState(project);
+
+    expect(state).toEqual({
+      actions: [{
+        id: 'action-1',
+        name: 'Run action',
+        command: 'pnpm dev',
+        icon: null,
+      }],
+      primaryActionId: 'action-1',
+    });
+  });
+
+  test('normalizes runIn worktree to omission when loading project actions state', async () => {
+    files.set(getConfigPath(project.path), JSON.stringify({
+      projectPath: project.path,
+      projectActions: [
+        { id: 'action-1', name: 'Run action', command: 'pnpm dev', runIn: 'worktree' },
+      ],
+      projectActionsPrimaryId: 'action-1',
+    }));
+
+    const state = await getProjectActionsState(project);
+
+    expect(state).toEqual({
+      actions: [
+        { id: 'action-1', name: 'Run action', command: 'pnpm dev', icon: null },
+      ],
       primaryActionId: 'action-1',
     });
   });

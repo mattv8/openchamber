@@ -50,7 +50,7 @@ export interface OpenChamberProjectAction {
   name: string;
   command: string;
   icon?: string | null;
-  runIn?: 'worktree';
+  runIn?: 'parent';
   platforms?: OpenChamberProjectActionPlatform[];
   autoOpenUrl?: boolean;
   openUrl?: string;
@@ -298,7 +298,7 @@ const sanitizeProjectActions = (value: unknown): OpenChamberProjectAction[] => {
     seenIds.add(id);
 
     const iconRaw = typeof record.icon === 'string' ? record.icon.trim() : '';
-    const runIn = record.runIn === 'worktree' ? 'worktree' : undefined;
+    const runIn = record.runIn === 'parent' ? 'parent' : undefined;
     const platforms = sanitizeProjectActionPlatforms(record.platforms);
     const autoOpenUrl = record.autoOpenUrl === true;
     const openUrlRaw = typeof record.openUrl === 'string' ? record.openUrl.trim() : '';

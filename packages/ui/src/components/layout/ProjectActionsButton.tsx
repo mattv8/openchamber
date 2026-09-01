@@ -243,10 +243,10 @@ export const ProjectActionsButton = ({
   }, [normalizedDirectory, normalizedProjectDirectory]);
 
   const executionDirectoryFor = React.useCallback((action: OpenChamberProjectAction): string => {
-    if (action.id === AUTO_DISCOVER_ACTION_ID || action.runIn === 'worktree') {
-      return normalizedDirectory;
+    if (action.id !== AUTO_DISCOVER_ACTION_ID && action.runIn === 'parent') {
+      return normalizedProjectDirectory || normalizedDirectory;
     }
-    return normalizedProjectDirectory || normalizedDirectory;
+    return normalizedDirectory;
   }, [normalizedDirectory, normalizedProjectDirectory]);
 
   const executionKey = React.useCallback((executionDirectory: string, actionId: string, executionId: string) => (

@@ -289,27 +289,7 @@ describe('ProjectActionsButton lifecycle', () => {
     expect(subscriptions.map((entry) => entry.closed)).toEqual([1, 1, 0]);
   });
 
-  test('default action runs in the parent checkout and stores its tab there', async () => {
-    await renderButton({ projectPath: '/repo', directory: '/repo-worktree' });
-
-    const primaryButton = host.querySelector('button');
-    if (!primaryButton) {
-      throw new Error('expected primary button');
-    }
-
-    await act(async () => {
-      primaryButton.dispatchEvent(new Event('click', { bubbles: true }));
-      await Promise.resolve();
-    });
-
-    expect(createCalls).toHaveLength(1);
-    expect(createCalls[0]?.cwd).toBe('/repo');
-    expect(useTerminalStore.getState().getDirectoryState('/repo')?.tabs.some((tab) => tab.purpose.type === 'project-action' && tab.purpose.actionId === 'build')).toBe(true);
-    expect(useTerminalStore.getState().getDirectoryState('/repo-worktree')?.tabs.some((tab) => tab.purpose.type === 'project-action') ?? false).toBe(false);
-  });
-
-  test('worktree action runs in the current worktree and stores its tab there', async () => {
-    mockedActionsState.actions = [{ id: 'build', name: 'Build', command: 'echo hello', icon: 'build', runIn: 'worktree' }];
+  test('default action runs in the current worktree and stores its tab there', async () => {
     await renderButton({ projectPath: '/repo', directory: '/repo-worktree' });
 
     const primaryButton = host.querySelector('button');
@@ -326,6 +306,26 @@ describe('ProjectActionsButton lifecycle', () => {
     expect(createCalls[0]?.cwd).toBe('/repo-worktree');
     expect(useTerminalStore.getState().getDirectoryState('/repo-worktree')?.tabs.some((tab) => tab.purpose.type === 'project-action' && tab.purpose.actionId === 'build')).toBe(true);
     expect(useTerminalStore.getState().getDirectoryState('/repo')?.tabs.some((tab) => tab.purpose.type === 'project-action') ?? false).toBe(false);
+  });
+
+  test('parent action runs in the parent checkout and stores its tab there', async () => {
+    mockedActionsState.actions = [{ id: 'build', name: 'Build', command: 'echo hello', icon: 'build', runIn: 'parent' }];
+    await renderButton({ projectPath: '/repo', directory: '/repo-worktree' });
+
+    const primaryButton = host.querySelector('button');
+    if (!primaryButton) {
+      throw new Error('expected primary button');
+    }
+
+    await act(async () => {
+      primaryButton.dispatchEvent(new Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(createCalls).toHaveLength(1);
+    expect(createCalls[0]?.cwd).toBe('/repo');
+    expect(useTerminalStore.getState().getDirectoryState('/repo')?.tabs.some((tab) => tab.purpose.type === 'project-action' && tab.purpose.actionId === 'build')).toBe(true);
+    expect(useTerminalStore.getState().getDirectoryState('/repo-worktree')?.tabs.some((tab) => tab.purpose.type === 'project-action') ?? false).toBe(false);
   });
 
   test('auto-discover without a preview hint settles on an announced localhost URL in context preview only', async () => {

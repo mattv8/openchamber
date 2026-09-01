@@ -53,7 +53,7 @@ describe('ProjectActionsSection', () => {
     windowInstance.close();
   });
 
-  test('shows the parent checkout label instead of the persisted sentinel', async () => {
+  test('shows the current worktree label when runIn is omitted', async () => {
     await act(async () => {
       root.render(
         <I18nProvider>
@@ -74,7 +74,7 @@ describe('ProjectActionsSection', () => {
     });
 
     const runInTrigger = host.querySelector<HTMLButtonElement>('button[aria-label="Working directory for this action"]');
-    expect(runInTrigger?.textContent).toContain('Parent checkout');
+    expect(runInTrigger?.textContent).toContain('Current worktree');
     expect(runInTrigger?.textContent).not.toContain('__project__');
   });
 });
