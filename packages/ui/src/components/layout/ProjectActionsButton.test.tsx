@@ -6,6 +6,7 @@ import { Window } from 'happy-dom';
 import { I18nProvider } from '@/lib/i18n';
 import type { CreateTerminalOptions, TerminalHandlers, TerminalStreamEvent } from '@/lib/api/types';
 import { useTerminalStore } from '@/stores/useTerminalStore';
+import type { OpenChamberProjectAction } from '@/lib/openchamberConfig';
 
 const toastCalls = {
   error: new Array<string>(),
@@ -38,12 +39,19 @@ type SubscriptionRecord = {
   closed: number;
 };
 
+interface MockedActionsState {
+  actions: OpenChamberProjectAction[];
+}
+
 const createCalls: CreateTerminalOptions[] = [];
 const sendCalls: string[] = [];
 const forceKillCalls: string[] = [];
 const closeCalls: string[] = [];
 const subscriptions: SubscriptionRecord[] = [];
 let sessionCounter = 0;
+const mockedActionsState: MockedActionsState = {
+  actions: [{ id: 'build', name: 'Build', command: 'echo hello', icon: 'build' }],
+};
 
 const emitToSession = (sessionId: string, event: TerminalStreamEvent) => {
   subscriptions
@@ -119,7 +127,7 @@ mock.module('@/contexts/useThemeSystem', () => ({ useThemeSystem: () => ({ curre
 mock.module('@/stores/useDesktopSshStore', () => ({ useDesktopSshStore: useDesktopSshStoreMock }));
 mock.module('@/lib/url', () => ({ openExternalUrl: async () => undefined }));
 mock.module('@/lib/openchamberConfig', () => ({
-  getProjectActionsState: async () => ({ actions: [{ id: 'build', name: 'Build', command: 'echo hello', icon: 'build' }] }),
+  getProjectActionsState: async () => mockedActionsState,
 }));
 mock.module('@/lib/browser/announcedServers', () => ({ setAnnouncedDevServers: () => undefined }));
 mock.module('@/lib/detectDevServer', () => ({ detectDevServerCommand: async () => null, readPackageJsonScripts: async () => ({}) }));
@@ -157,25 +165,33 @@ describe('ProjectActionsButton lifecycle', () => {
     toastCalls.info.length = 0;
     toastCalls.success.length = 0;
     sessionCounter = 0;
+    mockedActionsState.actions = [{ id: 'build', name: 'Build', command: 'echo hello', icon: 'build' }];
   });
 
   afterEach(async () => {
     await act(async () => root.unmount());
   });
 
-  test('runs, stops, and reruns on the same action tab while cleaning old subscriptions once', async () => {
+  const renderButton = async ({
+    projectPath = '/repo',
+    directory = '/repo',
+  }: { projectPath?: string; directory?: string } = {}) => {
     await act(async () => {
       root.render(
         React.createElement(I18nProvider, null,
           React.createElement(ProjectActionsButton, {
-            projectRef: { id: 'project-1', path: '/repo' },
-            directory: '/repo',
+            projectRef: { id: 'project-1', path: projectPath },
+            directory,
             allowMobile: true,
           }),
         ),
       );
     });
     await act(async () => { await Promise.resolve(); });
+  };
+
+  test('runs, stops, and reruns on the same action tab while cleaning old subscriptions once', async () => {
+    await renderButton();
 
     const primaryButton = host.querySelector('button');
     if (!primaryButton) {
@@ -221,5 +237,44 @@ describe('ProjectActionsButton lifecycle', () => {
     expect(forceKillCalls).toEqual([]);
     expect(closeCalls).toEqual(['session-1']);
     expect(subscriptions.map((entry) => entry.closed)).toEqual([1, 1, 0]);
+  });
+
+  test('default action runs in the parent checkout and stores its tab there', async () => {
+    await renderButton({ projectPath: '/repo', directory: '/repo-worktree' });
+
+    const primaryButton = host.querySelector('button');
+    if (!primaryButton) {
+      throw new Error('expected primary button');
+    }
+
+    await act(async () => {
+      primaryButton.dispatchEvent(new Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(createCalls).toHaveLength(1);
+    expect(createCalls[0]?.cwd).toBe('/repo');
+    expect(useTerminalStore.getState().getDirectoryState('/repo')?.tabs.some((tab) => tab.purpose.type === 'project-action' && tab.purpose.actionId === 'build')).toBe(true);
+    expect(useTerminalStore.getState().getDirectoryState('/repo-worktree')?.tabs.some((tab) => tab.purpose.type === 'project-action') ?? false).toBe(false);
+  });
+
+  test('worktree action runs in the current worktree and stores its tab there', async () => {
+    mockedActionsState.actions = [{ id: 'build', name: 'Build', command: 'echo hello', icon: 'build', runIn: 'worktree' }];
+    await renderButton({ projectPath: '/repo', directory: '/repo-worktree' });
+
+    const primaryButton = host.querySelector('button');
+    if (!primaryButton) {
+      throw new Error('expected primary button');
+    }
+
+    await act(async () => {
+      primaryButton.dispatchEvent(new Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(createCalls).toHaveLength(1);
+    expect(createCalls[0]?.cwd).toBe('/repo-worktree');
+    expect(useTerminalStore.getState().getDirectoryState('/repo-worktree')?.tabs.some((tab) => tab.purpose.type === 'project-action' && tab.purpose.actionId === 'build')).toBe(true);
+    expect(useTerminalStore.getState().getDirectoryState('/repo')?.tabs.some((tab) => tab.purpose.type === 'project-action') ?? false).toBe(false);
   });
 });
