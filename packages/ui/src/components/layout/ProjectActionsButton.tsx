@@ -46,6 +46,7 @@ import type { TerminalTab } from '@/stores/useTerminalStore';
 type UrlWatchEntry = {
   directory: string;
   tabId: string;
+  actionId: string;
   executionId: string;
   lastSeenChunkId: number | null;
   openedUrl: boolean;
@@ -424,30 +425,30 @@ export const ProjectActionsButton = ({
       const watch = urlWatchByRunKeyRef.current[runKey];
       if (!watch || watch.openedUrl) return;
 
-      const run = projectActionRuns[runKey];
-      if (!run) return;
+      const executionStateKey = executionKey(watch.directory, watch.actionId, watch.executionId);
 
       const candidates = watch.announced;
       if (candidates.length === 0) return;
+      window.clearTimeout(previewWaitTimeoutByRunKeyRef.current[executionStateKey]);
+      delete previewWaitTimeoutByRunKeyRef.current[executionStateKey];
       watch.openedUrl = true;
       setWaitingForPreviewByExecution((current) => {
-        const key = executionKey(run.directory, run.actionId, run.executionId);
-        if (!current[key]) return current;
+        if (!current[executionStateKey]) return current;
         const next = { ...current };
-        delete next[key];
+        delete next[executionStateKey];
         return next;
       });
 
       if (candidates.length === 1) {
-        setAnnouncedDevServers(run.directory, []);
-        setTabPreviewUrl(run.directory, run.tabId, candidates[0], { locked: false, autoOpened: true });
-        openContextPreview(run.directory, candidates[0]);
+        setAnnouncedDevServers(watch.directory, []);
+        setTabPreviewUrl(watch.directory, watch.tabId, candidates[0], { locked: false, autoOpened: true });
+        openContextPreview(watch.directory, candidates[0]);
         return;
       }
 
       watch.offering = true;
-      setAnnouncedDevServers(run.directory, candidates);
-      useUIStore.getState().openContextSurface(run.directory, 'browser');
+      setAnnouncedDevServers(watch.directory, candidates);
+      useUIStore.getState().openContextSurface(watch.directory, 'browser');
       toast.info(t('projectActions.toast.multipleServers'));
     };
 
@@ -469,6 +470,7 @@ export const ProjectActionsButton = ({
           : {
               directory: entry.directory,
               tabId: entry.tabId,
+              actionId: entry.actionId,
               executionId: entry.executionId,
               lastSeenChunkId: null,
               openedUrl: false,
@@ -841,24 +843,29 @@ export const ProjectActionsButton = ({
       if (discovered.id === AUTO_DISCOVER_ACTION_ID && !manualOpenUrl) {
         setWaitingForPreviewByExecution((current) => ({ ...current, [executionStateKey]: true }));
         previewWaitTimeoutByRunKeyRef.current[executionStateKey] = window.setTimeout(() => {
+          delete previewWaitTimeoutByRunKeyRef.current[executionStateKey];
+          const watch = urlWatchByRunKeyRef.current[key];
+          if (!watch || watch.executionId !== adoptedExecutionId || watch.openedUrl || watch.offering) {
+            return;
+          }
+          if (!matchesActionExecution(executionDirectory, tabId, adoptedExecutionId)) {
+            return;
+          }
           setWaitingForPreviewByExecution((current) => {
             if (!current[executionStateKey]) return current;
             const next = { ...current };
             delete next[executionStateKey];
             return next;
           });
-          const run = projectActionRuns[key];
-          if (run) {
-            useTerminalStore.getState().setActiveTab(run.directory, run.tabId);
-            useUIStore.getState().openContextPanelTab(run.directory, { mode: 'terminal' });
-          }
-          delete previewWaitTimeoutByRunKeyRef.current[executionStateKey];
+          useTerminalStore.getState().setActiveTab(executionDirectory, tabId);
+          useUIStore.getState().openContextPanelTab(executionDirectory, { mode: 'terminal' });
         }, AUTO_DISCOVER_PREVIEW_WAIT_TIMEOUT_MS);
       }
 
       urlWatchByRunKeyRef.current[key] = {
         directory: executionDirectory,
         tabId,
+        actionId: discovered.id,
         executionId: adoptedExecutionId,
         lastSeenChunkId: null,
         openedUrl: Boolean(desktopForwardUrl) || Boolean(manualOpenUrl) || hasCustomOpenUrl,

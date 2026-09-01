@@ -15,6 +15,7 @@ const toastCalls = {
 } satisfies { error: string[]; info: string[]; success: string[] };
 
 const openContextPreviewCalls: Array<{ directory: string; url: string }> = [];
+const openContextPanelTabCalls: Array<{ directory: string; mode: string }> = [];
 const openExternalCalls: string[] = [];
 const detectedDevServer: MockedDetectedDevServer = { command: null, previewUrlHint: null };
 const mockedDeviceInfo = { isMobile: false, isTablet: false, hasTouchOnlyPointer: false };
@@ -28,7 +29,9 @@ const uiState = {
   openContextPreview: (directory: string, url: string) => {
     openContextPreviewCalls.push({ directory, url });
   },
-  openContextPanelTab: () => undefined,
+  openContextPanelTab: (directory: string, options: { mode: string }) => {
+    openContextPanelTabCalls.push({ directory, mode: options.mode });
+  },
   openContextSurface: () => undefined,
 };
 
@@ -157,9 +160,31 @@ describe('ProjectActionsButton lifecycle', () => {
   let windowInstance: Window;
   let root: Root;
   let host: HTMLDivElement;
+  const scheduledWindowTimeouts = new Map<ReturnType<Window['setTimeout']>, { delay: number; run: () => void }>();
+
+  const runWindowTimeouts = async (delay: number) => {
+    const matching = [...scheduledWindowTimeouts.entries()].filter(([, timeout]) => timeout.delay === delay);
+    for (const [id] of matching) scheduledWindowTimeouts.delete(id);
+    await act(async () => {
+      for (const [, timeout] of matching) timeout.run();
+      await Promise.resolve();
+    });
+  };
 
   beforeEach(() => {
     windowInstance = new Window({ url: 'http://localhost/' });
+    scheduledWindowTimeouts.clear();
+    const originalSetTimeout = windowInstance.setTimeout.bind(windowInstance);
+    const originalClearTimeout = windowInstance.clearTimeout.bind(windowInstance);
+    windowInstance.setTimeout = (callback, delay = 0, ...args) => {
+      const id = originalSetTimeout(() => undefined, 0);
+      originalClearTimeout(id);
+      scheduledWindowTimeouts.set(id, { delay, run: () => callback(...args) });
+      return id;
+    };
+    windowInstance.clearTimeout = (id) => {
+      if (id !== undefined) scheduledWindowTimeouts.delete(id);
+    };
     Object.assign(globalThis, {
       window: windowInstance,
       document: windowInstance.document,
@@ -184,6 +209,7 @@ describe('ProjectActionsButton lifecycle', () => {
     toastCalls.info.length = 0;
     toastCalls.success.length = 0;
     openContextPreviewCalls.length = 0;
+    openContextPanelTabCalls.length = 0;
     openExternalCalls.length = 0;
     detectedDevServer.command = null;
     detectedDevServer.previewUrlHint = null;
@@ -329,11 +355,33 @@ describe('ProjectActionsButton lifecycle', () => {
         sequence: 1,
         replayData: undefined,
       });
-      await new Promise((resolve) => setTimeout(resolve, 3_100));
     });
+    await runWindowTimeouts(3_000);
 
     expect(openContextPreviewCalls).toEqual([{ directory: '/repo', url: 'http://127.0.0.1:4321' }]);
     expect(openExternalCalls).toEqual([]);
+    await runWindowTimeouts(15_000);
+    expect(openContextPanelTabCalls).toEqual([]);
+  });
+
+  test('auto-discover opens its terminal when no preview URL appears before the fallback timeout', async () => {
+    mockedDeviceInfo.isMobile = false;
+    detectedDevServer.command = 'bun run dev';
+    await renderButton();
+
+    const primaryButton = host.querySelector('button');
+    if (!primaryButton) {
+      throw new Error('expected primary button');
+    }
+
+    await act(async () => {
+      primaryButton.dispatchEvent(new Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(openContextPanelTabCalls).toEqual([]);
+    await runWindowTimeouts(15_000);
+    expect(openContextPanelTabCalls).toEqual([{ directory: '/repo', mode: 'terminal' }]);
   });
 
   test('manual action URL does not open a second output-derived URL', async () => {
