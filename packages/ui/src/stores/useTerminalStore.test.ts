@@ -12,11 +12,11 @@ const buffer = (tabId: string) => useTerminalStore.getState().getBuffer('/repo',
 describe('terminal state reconciliation', () => {
   afterEach(() => useTerminalStore.getState().clearAll());
 
-  test('adopts unknown server sessions into the fresh placeholder tab', () => {
+  test('reconciles unknown server sessions into the fresh placeholder tab', () => {
     setup();
-    useTerminalStore.getState().adoptServerSessions('/repo', [
-      { sessionId: 'srv-1', status: 'running', createdAt: 100 },
-      { sessionId: 'srv-2', status: 'exited', createdAt: null },
+    useTerminalStore.getState().reconcileServerSessions('/repo', [
+      { sessionId: 'srv-1', cwd: '/repo', status: 'running', createdAt: 100 },
+      { sessionId: 'srv-2', cwd: '/repo', status: 'exited', createdAt: null },
     ]);
     const state = useTerminalStore.getState().getDirectoryState('/repo')!;
     expect(state.tabs.map((tab) => tab.id)).toEqual(['srv-1', 'srv-2']);
@@ -26,13 +26,13 @@ describe('terminal state reconciliation', () => {
     expect(state.activeTabId).toBe('srv-1');
   });
 
-  test('adoption is additive: existing tabs and referenced sessions survive', () => {
+  test('reconciliation keeps existing interactive tabs and adopts unknown sessions', () => {
     const tabId = setup();
     useTerminalStore.getState().appendToBuffer('/repo', tabId, 'output', 1);
     useTerminalStore.getState().setTabSessionId('/repo', tabId, 'srv-live');
-    useTerminalStore.getState().adoptServerSessions('/repo', [
-      { sessionId: 'srv-live', status: 'running', createdAt: 1 },
-      { sessionId: 'srv-orphan', status: 'running', createdAt: 2 },
+    useTerminalStore.getState().reconcileServerSessions('/repo', [
+      { sessionId: 'srv-live', cwd: '/repo', status: 'running', createdAt: 1 },
+      { sessionId: 'srv-orphan', cwd: '/repo', status: 'running', createdAt: 2 },
     ]);
     const state = useTerminalStore.getState().getDirectoryState('/repo')!;
     expect(state.tabs).toHaveLength(2);
@@ -41,16 +41,102 @@ describe('terminal state reconciliation', () => {
     expect(state.activeTabId).toBe(tabId);
   });
 
-  test('re-adopting the same sessions changes nothing', () => {
+  test('re-reconciling the same sessions changes nothing', () => {
     setup();
-    useTerminalStore.getState().adoptServerSessions('/repo', [
-      { sessionId: 'srv-1', status: 'running', createdAt: 100 },
+    useTerminalStore.getState().reconcileServerSessions('/repo', [
+      { sessionId: 'srv-1', cwd: '/repo', status: 'running', createdAt: 100 },
     ]);
     const before = useTerminalStore.getState().sessions;
-    useTerminalStore.getState().adoptServerSessions('/repo', [
-      { sessionId: 'srv-1', status: 'running', createdAt: 100 },
+    useTerminalStore.getState().reconcileServerSessions('/repo', [
+      { sessionId: 'srv-1', cwd: '/repo', status: 'running', createdAt: 100 },
     ]);
     expect(useTerminalStore.getState().sessions).toBe(before);
+  });
+
+  test('successful empty reconciliation with no local directory keeps the original sessions reference', () => {
+    const before = useTerminalStore.getState().sessions;
+    useTerminalStore.getState().reconcileServerSessions('/missing', []);
+    expect(useTerminalStore.getState().sessions).toBe(before);
+  });
+
+  test('hydrates persisted action tabs with live fields reset until server authority returns', () => {
+    const mergePersistedState = useTerminalStore.persist.getOptions().merge;
+    if (!mergePersistedState) {
+      throw new Error('expected persisted merge helper');
+    }
+    const hydrated = mergePersistedState({
+      sessions: [[
+        '/repo',
+        {
+          activeTabId: 'tab-a',
+          tabs: [{ id: 'tab-a', label: 'Build', iconKey: 'build', createdAt: 10, purpose: { type: 'project-action', actionId: 'build' } }],
+        },
+      ]],
+      nextTabId: 2,
+    }, useTerminalStore.getState());
+    const tab = hydrated.sessions.get('/repo')?.tabs[0];
+    expect(tab?.purpose).toEqual({ type: 'project-action', actionId: 'build', executionId: null });
+    expect(tab?.lifecycle).toBe('idle');
+    expect(tab?.terminalSessionId).toBeNull();
+  });
+
+  test('adopts an existing running project-action session by action id across clients', () => {
+    const tabId = setup();
+    useTerminalStore.getState().setTabPurpose('/repo', tabId, { type: 'project-action', actionId: 'build', executionId: null });
+    useTerminalStore.getState().reconcileServerSessions('/repo', [{
+      sessionId: 'srv-shared',
+      cwd: '/repo',
+      status: 'running',
+      createdAt: 1,
+      mode: 'command',
+      purpose: { type: 'project-action', actionId: 'build', executionId: 'exec-2' },
+    }]);
+    const tab = useTerminalStore.getState().getDirectoryState('/repo')!.tabs[0]!;
+    expect(tab.id).toBe(tabId);
+    expect(tab.terminalSessionId).toBe('srv-shared');
+    expect(tab.lifecycle).toBe('running');
+    expect(tab.purpose).toEqual({ type: 'project-action', actionId: 'build', executionId: 'exec-2' });
+  });
+
+  test('gives unknown adopted action sessions a generic fallback label and icon', () => {
+    setup();
+    useTerminalStore.getState().reconcileServerSessions('/repo', [{
+      sessionId: 'srv-build',
+      cwd: '/repo',
+      status: 'running',
+      createdAt: 1,
+      mode: 'command',
+      purpose: { type: 'project-action', actionId: 'unknown-action', executionId: 'exec-1' },
+    }]);
+    const tab = useTerminalStore.getState().getDirectoryState('/repo')!.tabs[0]!;
+    expect(tab.label).toBe('unknown-action');
+    expect(tab.iconKey).toBe('play');
+  });
+
+  test('successful empty reconciliation exits known action sessions without touching unrelated directories', () => {
+    const repoTab = setup();
+    useTerminalStore.getState().setTabPurpose('/repo', repoTab, { type: 'project-action', actionId: 'build', executionId: 'exec-1' });
+    useTerminalStore.getState().setTabSessionId('/repo', repoTab, 'srv-build');
+    useTerminalStore.getState().ensureDirectory('/other');
+    const otherBefore = useTerminalStore.getState().getDirectoryState('/other');
+    useTerminalStore.getState().reconcileServerSessions('/repo', []);
+    const tab = useTerminalStore.getState().getDirectoryState('/repo')!.tabs[0]!;
+    expect(tab.lifecycle).toBe('exited');
+    expect(tab.purpose).toEqual({ type: 'project-action', actionId: 'build', executionId: null });
+    expect(useTerminalStore.getState().getDirectoryState('/other')).toBe(otherBefore);
+  });
+
+  test('execution-guarded transitions ignore stale completions after a rerun', () => {
+    const tabId = setup();
+    const firstExecution = useTerminalStore.getState().allocateActionExecution('/repo', tabId, 'build')!;
+    const secondExecution = useTerminalStore.getState().allocateActionExecution('/repo', tabId, 'build')!;
+    expect(firstExecution).not.toBe(secondExecution);
+    useTerminalStore.getState().setTabSessionId('/repo', tabId, 'srv-old', { expectedExecutionId: firstExecution });
+    useTerminalStore.getState().setTabLifecycle('/repo', tabId, 'running', { expectedExecutionId: secondExecution });
+    const tab = useTerminalStore.getState().getDirectoryState('/repo')!.tabs[0]!;
+    expect(tab.terminalSessionId).toBeNull();
+    expect(tab.lifecycle).toBe('running');
+    expect(tab.purpose).toEqual({ type: 'project-action', actionId: 'build', executionId: secondExecution });
   });
 
   test('applies snapshots atomically and deduplicates output by sequence', () => {
