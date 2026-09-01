@@ -14,20 +14,27 @@ import { useUIStore } from '@/stores/useUIStore';
 import { Button } from '@/components/ui/button';
 import { SortableTabsStrip } from '@/components/ui/sortable-tabs-strip';
 import { Icon } from "@/components/icon/Icon";
+import type { IconName } from '@/components/icon/icons';
 import { useDeviceInfo } from '@/lib/device';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { extractTerminalPreviewUrl, isTerminalPreviewUrlAvailable } from '@/lib/terminalPreview';
 import { useI18n } from '@/lib/i18n';
-import { PROJECT_ACTION_ICON_MAP, type ProjectActionIconKey } from '@/lib/projectActions';
+import { PROJECT_ACTION_ICONS } from '@/lib/projectActions';
 import { useInlineCommentDraftStore } from '@/stores/useInlineCommentDraftStore';
 import { applyTerminalModifier, terminalControlCharacter, terminalSequenceForKey, type TerminalModifier as Modifier, type TerminalQuickKey as MobileKey } from '@/lib/terminalInput';
 import { formatShortcutForDisplay } from '@/lib/shortcuts';
+import { reconcileTerminalSessionAuthority } from '@/lib/projectActionTerminal';
 
 type TerminalViewProps = {
     visible?: boolean;
 };
 
 const FALLBACK_TERMINAL_SIZE = { cols: 80, rows: 24 } as const;
+const ACTIVE_PROJECT_ACTION_LIFECYCLES = new Set(['starting', 'running', 'stopping']);
+const resolveTabIconName = (iconKey: string | null): IconName => {
+    const matchedIcon = PROJECT_ACTION_ICONS.find((entry) => entry.key === iconKey);
+    return matchedIcon?.Icon ?? 'terminal';
+};
 
 export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     const { t } = useI18n();
@@ -59,7 +66,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     const setActiveTab = useTerminalStore((s) => s.setActiveTab);
     const closeTab = useTerminalStore((s) => s.closeTab);
     const setTabSessionId = useTerminalStore((s) => s.setTabSessionId);
-    const adoptServerSessions = useTerminalStore((s) => s.adoptServerSessions);
+    const reconcileServerSessions = useTerminalStore((s) => s.reconcileServerSessions);
     const setTabLifecycle = useTerminalStore((s) => s.setTabLifecycle);
     const setConnecting = useTerminalStore((s) => s.setConnecting);
     const appendToBuffer = useTerminalStore((s) => s.appendToBuffer);
@@ -89,8 +96,20 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     const terminalTabItems = React.useMemo(() => {
         return (directoryTerminalState?.tabs ?? []).map((tab) => ({
             icon: (() => {
-                const tabIconName = tab.iconKey ? PROJECT_ACTION_ICON_MAP[tab.iconKey as ProjectActionIconKey] ?? 'terminal' : 'terminal';
-                return <Icon name={tabIconName} className="h-4 w-4" />;
+                const showProjectActionSpinner = tab.purpose.type === 'project-action'
+                    && ACTIVE_PROJECT_ACTION_LIFECYCLES.has(tab.lifecycle);
+                const tabIconName = showProjectActionSpinner
+                    ? 'loader-4'
+                    : resolveTabIconName(tab.iconKey);
+                return (
+                    <Icon
+                        name={tabIconName}
+                        className={cn(
+                            'h-4 w-4',
+                            showProjectActionSpinner && 'animate-spin text-muted-foreground motion-reduce:animate-none'
+                        )}
+                    />
+                );
             })(),
             id: tab.id,
             label: tab.label,
@@ -101,6 +120,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
 
     const terminalSessionId = activeTab?.terminalSessionId ?? null;
     const terminalLifecycle = activeTab?.lifecycle ?? 'idle';
+    const isActionTab = activeTab?.purpose.type === 'project-action';
     // Scrollback is a leaf subscription: streaming output must not rerender the tab strip.
     const bufferChunks = useTerminalStore((s) => (
         effectiveDirectory && activeTabId ? s.getBuffer(effectiveDirectory, activeTabId).chunks : EMPTY_TERMINAL_BUFFER.chunks
@@ -186,16 +206,15 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
         }
         let cancelled = false;
         const directory = effectiveDirectory;
-        void terminal.listSessions(directory)
+        void reconcileTerminalSessionAuthority(terminal, directory)
             .then((serverSessions) => {
-                if (cancelled || directoryRef.current !== directory) return;
-                adoptServerSessions(directory, serverSessions);
-            })
-            .catch(() => { /* keep local tabs; the next mount or directory switch retries */ });
+                if (cancelled || directoryRef.current !== directory || !serverSessions) return;
+                reconcileServerSessions(directory, serverSessions);
+            });
         return () => {
             cancelled = true;
         };
-    }, [terminalHydrated, effectiveDirectory, terminal, adoptServerSessions]);
+    }, [terminalHydrated, effectiveDirectory, terminal, reconcileServerSessions]);
 
     // The server reaps terminals with no attached socket after an idle timeout,
     // but only the active tab holds an attachment. While this client is open,
@@ -210,7 +229,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
             const ids: string[] = [];
             for (const dirState of useTerminalStore.getState().sessions.values()) {
                 for (const tab of dirState.tabs) {
-                    if (tab.terminalSessionId) ids.push(tab.terminalSessionId);
+                    if (tab.terminalSessionId && tab.lifecycle !== 'exited') ids.push(tab.terminalSessionId);
                 }
             }
             if (ids.length > 0) void terminal.touchSessions?.(ids).catch(() => {});
@@ -345,7 +364,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                                 const currentTab = useTerminalStore.getState()
                                     .getDirectoryState(directory)
                                     ?.tabs.find((t) => t.id === tabId);
-                                const isActionTab = Boolean(currentTab?.label?.startsWith('Action:'));
+                                const isActionTab = currentTab?.purpose.type === 'project-action';
                                 appendToBuffer(
                                     directory,
                                     tabId,
@@ -384,7 +403,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                         setIsReconnectPending(false);
                         if (error.code === 'SESSION_NOT_FOUND') {
                             const currentTab = useTerminalStore.getState().getDirectoryState(directory)?.tabs.find((tab) => tab.id === tabId);
-                            if (!currentTab?.label?.startsWith('Action:')) {
+                            if (currentTab?.purpose.type !== 'project-action') {
                                 setConnectionError(null);
                                 setIsFatalError(false);
                                 setConnecting(directory, tabId, false);
@@ -467,17 +486,14 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
             const tab = state.tabs.find((t) => t.id === tabId) ?? state.tabs[0];
             const terminalId = tab?.terminalSessionId ?? null;
             const terminalLifecycle = tab?.lifecycle ?? 'idle';
-            const isActionTab = Boolean(tab?.label?.startsWith('Action:'));
-            const buffer = useTerminalStore.getState().getBuffer(directory, tabId);
-            const hasBufferedOutput = buffer.byteLength > 0 || buffer.chunks.length > 0;
-
+            const tabIsActionTab = tab?.purpose.type === 'project-action';
             if (!terminalId) {
                 if (terminalLifecycle === 'exited') {
                     setConnecting(directory, tabId, false);
                     return;
                 }
 
-                if (isActionTab && hasBufferedOutput) {
+                if (tabIsActionTab) {
                     setConnecting(directory, tabId, false);
                     return;
                 }
@@ -615,6 +631,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     const handleRestart = React.useCallback(async () => {
         if (!effectiveDirectory) return;
         if (isRestarting) return;
+        if (isActionTab) return;
 
         const state = useTerminalStore.getState().getDirectoryState(effectiveDirectory);
         const tabId = enableTabs
@@ -659,7 +676,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
         } finally {
             setIsRestarting(false);
         }
-    }, [activeTabId, disconnectStream, effectiveDirectory, enableTabs, isRestarting, resetTerminalPreviewScan, setTabLifecycle, setTabSessionId, startStream, t, terminal, terminalLoginShell, terminalShell]);
+    }, [activeTabId, disconnectStream, effectiveDirectory, enableTabs, isActionTab, isRestarting, resetTerminalPreviewScan, setTabLifecycle, setTabSessionId, startStream, t, terminal, terminalLoginShell, terminalShell]);
 
     const handleHardRestart = React.useCallback(async () => {
         // Keep semantics: “close tab -> new clean tab”.
@@ -1077,7 +1094,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
                         </Button>
 
                         <div className="flex shrink-0 items-center gap-1 overflow-visible">
-                            <Button type="button" size="xs" variant="ghost" className="h-7 w-7 p-0" onClick={() => void handleRestart()} disabled={isRestarting} title={t('terminalView.actions.restart')} aria-label={t('terminalView.actions.restart')}>
+                            <Button type="button" size="xs" variant="ghost" className="h-7 w-7 p-0" onClick={() => void handleRestart()} disabled={isRestarting || isActionTab} title={t('terminalView.actions.restart')} aria-label={t('terminalView.actions.restart')}>
                                 <Icon name="restart" className="h-4 w-4" />
                             </Button>
                             <Button
