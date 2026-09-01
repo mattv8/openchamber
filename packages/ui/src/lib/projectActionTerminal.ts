@@ -1,5 +1,15 @@
 import type { CreateTerminalOptions, TerminalAPI, TerminalServerSession, TerminalSession, TerminalSessionPurpose } from './api/types';
 
+type TerminalActionMutationRevisions = ReadonlyMap<string, number>;
+
+const normalizeDirectory = (dir: string): string => {
+  let normalized = dir.trim();
+  while (normalized.length > 1 && normalized.endsWith('/')) {
+    normalized = normalized.slice(0, -1);
+  }
+  return normalized;
+};
+
 type ProjectActionTerminalCreateOptions = Omit<Extract<CreateTerminalOptions, { mode: 'command' }>, 'mode' | 'command'>;
 
 type CreateProjectActionTerminalSessionOptions = {
@@ -72,7 +82,14 @@ const isMatchingProjectActionPurpose = (
   && purpose.executionId.trim().length > 0
 );
 
-const reconcileFlights = new Map<string, Promise<TerminalServerSession[] | null>>();
+type ReconcileTerminalSessionAuthorityOptions = {
+  captureStartedActionMutationRevisions?: (directory: string) => TerminalActionMutationRevisions;
+};
+
+type ReconcileTerminalSessionAuthorityResult = {
+  sessions: TerminalServerSession[];
+  startedActionMutationRevisions: TerminalActionMutationRevisions;
+};
 
 export const createProjectActionTerminalSession = async ({
   terminal,
@@ -196,28 +213,44 @@ export const stopProjectActionTerminalSession = async ({
   finalizeExit();
 };
 
+const reconcileFlightsByTerminal = new WeakMap<
+  TerminalAPI,
+  Map<string, Promise<ReconcileTerminalSessionAuthorityResult | null>>
+>();
+
 export const reconcileTerminalSessionAuthority = (
   terminal: TerminalAPI,
   directory: string,
-): Promise<TerminalServerSession[] | null> => {
+  options: ReconcileTerminalSessionAuthorityOptions = {},
+): Promise<ReconcileTerminalSessionAuthorityResult | null> => {
   if (!terminal.listSessions) {
     return Promise.resolve(null);
   }
 
-  const key = `${directory}\u0000list`;
-  const existing = reconcileFlights.get(key);
+  const normalizedDirectory = normalizeDirectory(directory);
+  let terminalFlights = reconcileFlightsByTerminal.get(terminal);
+  if (!terminalFlights) {
+    terminalFlights = new Map();
+    reconcileFlightsByTerminal.set(terminal, terminalFlights);
+  }
+  const existing = terminalFlights.get(normalizedDirectory);
   if (existing) {
     return existing;
   }
 
-  const flight = terminal.listSessions(directory)
-    .then((sessions) => sessions)
+  const startedActionMutationRevisions = options.captureStartedActionMutationRevisions?.(normalizedDirectory)
+    ?? new Map<string, number>();
+  const flight = terminal.listSessions(normalizedDirectory)
+    .then((sessions) => ({ sessions, startedActionMutationRevisions }))
     .catch(() => null)
     .finally(() => {
-      if (reconcileFlights.get(key) === flight) {
-        reconcileFlights.delete(key);
+      if (terminalFlights.get(normalizedDirectory) === flight) {
+        terminalFlights.delete(normalizedDirectory);
+        if (terminalFlights.size === 0) {
+          reconcileFlightsByTerminal.delete(terminal);
+        }
       }
     });
-  reconcileFlights.set(key, flight);
+  terminalFlights.set(normalizedDirectory, flight);
   return flight;
 };

@@ -44,6 +44,9 @@ import {
 import type { TerminalTab } from '@/stores/useTerminalStore';
 
 type UrlWatchEntry = {
+  directory: string;
+  tabId: string;
+  executionId: string;
   lastSeenChunkId: number | null;
   openedUrl: boolean;
   tail: string;
@@ -132,6 +135,7 @@ export const ProjectActionsButton = ({
   const setTabLifecycle = useTerminalStore((state) => state.setTabLifecycle);
   const setTabPreviewUrl = useTerminalStore((state) => state.setTabPreviewUrl);
   const matchesActionExecution = useTerminalStore((state) => state.matchesActionExecution);
+  const captureStartedActionMutationRevisions = useTerminalStore((state) => state.captureStartedActionMutationRevisions);
 
   const [actions, setActions] = React.useState<OpenChamberProjectAction[]>([]);
   const [selectedActionId, setSelectedActionId] = React.useState<string | null>(null);
@@ -281,19 +285,27 @@ export const ProjectActionsButton = ({
   }, [executionKey, waitingForPreviewByExecution, watchedTerminalStates]);
 
   const clearExecutionUi = React.useCallback((executionDirectory: string, actionId: string, executionId: string) => {
-    const key = executionKey(executionDirectory, actionId, executionId);
-    delete urlWatchByRunKeyRef.current[key];
-    streamCleanupByRunKeyRef.current[key]?.();
-    delete streamCleanupByRunKeyRef.current[key];
+    const actionRunKey = toProjectActionRunKey(executionDirectory, actionId);
+    const executionStateKey = executionKey(executionDirectory, actionId, executionId);
+    const watch = urlWatchByRunKeyRef.current[actionRunKey];
+    const ownsActionScopedUi = watch?.executionId === executionId;
     const browserWindow = globalThis.window;
-    if (browserWindow) {
-      browserWindow.clearTimeout(previewWaitTimeoutByRunKeyRef.current[key]);
+    const clearPreviewWaitTimeout = (key: string) => {
+      browserWindow?.clearTimeout(previewWaitTimeoutByRunKeyRef.current[key]);
+      delete previewWaitTimeoutByRunKeyRef.current[key];
+    };
+
+    if (ownsActionScopedUi) {
+      delete urlWatchByRunKeyRef.current[actionRunKey];
+      clearPreviewWaitTimeout(actionRunKey);
     }
-    delete previewWaitTimeoutByRunKeyRef.current[key];
+    streamCleanupByRunKeyRef.current[executionStateKey]?.();
+    delete streamCleanupByRunKeyRef.current[executionStateKey];
+    clearPreviewWaitTimeout(executionStateKey);
     setWaitingForPreviewByExecution((current) => {
-      if (!current[key]) return current;
+      if (!current[executionStateKey]) return current;
       const next = { ...current };
-      delete next[key];
+      delete next[executionStateKey];
       return next;
     });
   }, [executionKey]);
@@ -329,15 +341,19 @@ export const ProjectActionsButton = ({
     }
     let cancelled = false;
     for (const executionDirectory of watchedTerminalDirectories) {
-      void reconcileTerminalSessionAuthority(terminal, executionDirectory).then((sessions) => {
-        if (cancelled || !sessions) return;
-        reconcileServerSessions(executionDirectory, sessions);
+      void reconcileTerminalSessionAuthority(terminal, executionDirectory, {
+        captureStartedActionMutationRevisions,
+      }).then((result) => {
+        if (cancelled || !result) return;
+        reconcileServerSessions(executionDirectory, result.sessions, {
+          startedActionMutationRevisions: result.startedActionMutationRevisions,
+        });
       });
     }
     return () => {
       cancelled = true;
     };
-  }, [reconcileServerSessions, terminal, watchedTerminalDirectories]);
+  }, [captureStartedActionMutationRevisions, reconcileServerSessions, terminal, watchedTerminalDirectories]);
 
   React.useEffect(() => {
     for (const { directory: tabDirectory, state } of watchedTerminalStates) {
@@ -447,7 +463,20 @@ export const ProjectActionsButton = ({
           continue;
         }
 
-        const watch = urlWatchByRunKeyRef.current[runKey] ?? { lastSeenChunkId: null, openedUrl: false, tail: '', openInPreview: false, announced: [], offering: false };
+        const existingWatch = urlWatchByRunKeyRef.current[runKey];
+        const watch = existingWatch?.executionId === entry.executionId
+          ? existingWatch
+          : {
+              directory: entry.directory,
+              tabId: entry.tabId,
+              executionId: entry.executionId,
+              lastSeenChunkId: null,
+              openedUrl: false,
+              tail: '',
+              openInPreview: false,
+              announced: [],
+              offering: false,
+            };
         urlWatchByRunKeyRef.current[runKey] = watch;
         const action = displayActions.find((item) => item.id === entry.actionId);
         const bufferChunks = terminalStore.getBuffer(entry.directory, entry.tabId).chunks;
@@ -520,6 +549,18 @@ export const ProjectActionsButton = ({
 
       for (const runKey of Object.keys(urlWatchByRunKeyRef.current)) {
         if (!currentRuns[runKey]) {
+          const watch = urlWatchByRunKeyRef.current[runKey];
+          const currentTab = watch
+            ? terminalSessions.get(watch.directory)?.tabs.find((tab) => tab.id === watch.tabId)
+            : undefined;
+          const watchStillOwnedByActiveExecution = currentTab?.purpose.type === 'project-action'
+            && currentTab.purpose.executionId === watch?.executionId
+            && Boolean(currentTab.terminalSessionId)
+            && currentTab.lifecycle !== 'idle'
+            && currentTab.lifecycle !== 'exited';
+          if (watchStillOwnedByActiveExecution) {
+            continue;
+          }
           delete urlWatchByRunKeyRef.current[runKey];
           window.clearTimeout(previewWaitTimeoutByRunKeyRef.current[runKey]);
           delete previewWaitTimeoutByRunKeyRef.current[runKey];
@@ -681,9 +722,13 @@ export const ProjectActionsButton = ({
       if (terminal.listSessions) {
         const currentTab = getActionTab(executionDirectory, discovered.id);
         if (currentTab?.purpose.type === 'project-action' && currentTab.purpose.executionId === null) {
-          const sessions = await reconcileTerminalSessionAuthority(terminal, executionDirectory);
-          if (sessions) {
-            reconcileServerSessions(executionDirectory, sessions);
+          const result = await reconcileTerminalSessionAuthority(terminal, executionDirectory, {
+            captureStartedActionMutationRevisions,
+          });
+          if (result) {
+            reconcileServerSessions(executionDirectory, result.sessions, {
+              startedActionMutationRevisions: result.startedActionMutationRevisions,
+            });
           }
         }
       }
@@ -811,7 +856,10 @@ export const ProjectActionsButton = ({
         }, AUTO_DISCOVER_PREVIEW_WAIT_TIMEOUT_MS);
       }
 
-      urlWatchByRunKeyRef.current[executionStateKey] = {
+      urlWatchByRunKeyRef.current[key] = {
+        directory: executionDirectory,
+        tabId,
+        executionId: adoptedExecutionId,
         lastSeenChunkId: null,
         openedUrl: Boolean(desktopForwardUrl) || Boolean(manualOpenUrl) || hasCustomOpenUrl,
         tail: '',
@@ -880,6 +928,7 @@ export const ProjectActionsButton = ({
     getActionTab,
     reconcileServerSessions,
     allocateActionExecution,
+    captureStartedActionMutationRevisions,
     setConnecting,
     setTabLifecycle,
     setTabPurpose,

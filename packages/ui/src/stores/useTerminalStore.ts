@@ -55,9 +55,17 @@ export type DirectoryTerminalState = {
   activeTabId: string | null;
 };
 
+type TerminalActionMutationRevisions = ReadonlyMap<string, number>;
+
+type ReconcileServerSessionsOptions = {
+  startedActionMutationRevisions?: TerminalActionMutationRevisions;
+};
+
 interface TerminalStore {
   sessions: Map<string, DirectoryTerminalState>;
   buffers: Map<string, TerminalBuffer>;
+  actionMutationRevisions: Map<string, number>;
+  nextActionMutationRevision: number;
   nextChunkId: number;
   nextTabId: number;
   hasHydrated: boolean;
@@ -67,9 +75,10 @@ interface TerminalStore {
   getActiveTab: (directory: string) => TerminalTab | undefined;
   getBuffer: (directory: string, tabId: string) => TerminalBuffer;
   matchesActionExecution: (directory: string, tabId: string, executionId: string | null | undefined) => boolean;
+  captureStartedActionMutationRevisions: (directory: string) => TerminalActionMutationRevisions;
 
   createTab: (directory: string) => string;
-  reconcileServerSessions: (directory: string, serverSessions: TerminalServerSession[]) => void;
+  reconcileServerSessions: (directory: string, serverSessions: TerminalServerSession[], options?: ReconcileServerSessionsOptions) => void;
   setActiveTab: (directory: string, tabId: string) => void;
   setTabLabel: (directory: string, tabId: string, label: string) => void;
   setTabIconKey: (directory: string, tabId: string, iconKey: string | null) => void;
@@ -188,6 +197,32 @@ function normalizeDirectory(dir: string): string {
   return normalized;
 }
 
+const actionMutationRevisionKey = (directory: string, actionId: string): string => `${directory}\u0000${actionId}`;
+
+const updateActionMutationRevision = (
+  revisions: Map<string, number>,
+  directory: string,
+  actionId: string,
+  revision: number,
+) => {
+  revisions.set(actionMutationRevisionKey(directory, actionId), revision);
+};
+
+const hasActionMutatedSinceRequestStarted = (
+  state: Pick<TerminalStore, 'actionMutationRevisions'>,
+  directory: string,
+  actionId: string,
+  startedActionMutationRevisions: TerminalActionMutationRevisions | undefined,
+): boolean => {
+  if (!startedActionMutationRevisions) {
+    return false;
+  }
+  const revisionKey = actionMutationRevisionKey(directory, actionId);
+  const currentRevision = state.actionMutationRevisions.get(revisionKey) ?? 0;
+  const startedRevision = startedActionMutationRevisions.get(revisionKey) ?? 0;
+  return currentRevision > startedRevision;
+};
+
 const DEFAULT_TAB_LABEL_PATTERN = /^Terminal(?: (\d+))?$/;
 
 /**
@@ -298,6 +333,8 @@ export const useTerminalStore = create<TerminalStore>()(
       (set, get) => ({
         sessions: new Map(),
         buffers: new Map(),
+        actionMutationRevisions: new Map(),
+        nextActionMutationRevision: 1,
         nextChunkId: 1,
         nextTabId: 1,
         hasHydrated: typeof window === 'undefined',
@@ -342,6 +379,17 @@ export const useTerminalStore = create<TerminalStore>()(
           return Boolean(tab && isProjectActionPurpose(tab.purpose) && tab.purpose.executionId === executionId);
         },
 
+        captureStartedActionMutationRevisions: (directory) => {
+          const key = normalizeDirectory(directory);
+          const prefix = actionMutationRevisionKey(key, '');
+          const snapshot = new Map<string, number>();
+          for (const [actionKey, revision] of get().actionMutationRevisions.entries()) {
+            if (!actionKey.startsWith(prefix)) continue;
+            snapshot.set(actionKey, revision);
+          }
+          return snapshot;
+        },
+
         createTab: (directory: string) => {
           const key = normalizeDirectory(directory);
           if (!key) {
@@ -373,7 +421,7 @@ export const useTerminalStore = create<TerminalStore>()(
           return tabId;
         },
 
-        reconcileServerSessions: (directory, serverSessions) => {
+        reconcileServerSessions: (directory, serverSessions, options) => {
           const key = normalizeDirectory(directory);
           if (!key) return;
 
@@ -398,11 +446,22 @@ export const useTerminalStore = create<TerminalStore>()(
             for (const session of serverSessions) {
               let matchIndex = tabs.findIndex((tab) => tab.terminalSessionId === session.sessionId || tab.id === session.sessionId);
               const sessionPurpose = session.purpose;
-              if (matchIndex < 0 && sessionPurpose?.type === 'project-action') {
+              const staleActionAuthority = sessionPurpose?.type === 'project-action'
+                && hasActionMutatedSinceRequestStarted(state, key, sessionPurpose.actionId, options?.startedActionMutationRevisions);
+              if (sessionPurpose?.type === 'project-action') {
                 listedActionIds.add(sessionPurpose.actionId);
-                matchIndex = tabs.findIndex((tab) => (
+                const actionMatchIndex = tabs.findIndex((tab) => (
                   isProjectActionPurpose(tab.purpose) && tab.purpose.actionId === sessionPurpose.actionId
                 ));
+                if (staleActionAuthority) {
+                  if (actionMatchIndex >= 0) {
+                    matchedTabIds.add(tabs[actionMatchIndex]!.id);
+                  }
+                  continue;
+                }
+                if (matchIndex < 0) {
+                  matchIndex = actionMatchIndex;
+                }
               }
 
               const nextPurpose: TerminalTabPurpose = sessionPurpose?.type === 'project-action'
@@ -460,6 +519,12 @@ export const useTerminalStore = create<TerminalStore>()(
             const reconciledTabs: TerminalTab[] = tabs.map((tab) => {
               if (!isProjectActionPurpose(tab.purpose)) return tab;
               if (listedActionIds.has(tab.purpose.actionId) || matchedTabIds.has(tab.id)) return tab;
+              if (
+                tab.lifecycle === 'starting'
+                || hasActionMutatedSinceRequestStarted(state, key, tab.purpose.actionId, options?.startedActionMutationRevisions)
+              ) {
+                return tab;
+              }
               if (tab.lifecycle === 'exited' && !tab.isConnecting) return tab;
               changed = true;
               return {
@@ -646,7 +711,12 @@ export const useTerminalStore = create<TerminalStore>()(
             nextTabs[idx] = { ...current, purpose };
             const sessions = new Map(state.sessions);
             sessions.set(key, { ...existing, tabs: nextTabs });
-            return { sessions };
+            if (purpose.type !== 'project-action') {
+              return { sessions };
+            }
+            const actionMutationRevisions = new Map(state.actionMutationRevisions);
+            updateActionMutationRevision(actionMutationRevisions, key, purpose.actionId, state.nextActionMutationRevision);
+            return { sessions, actionMutationRevisions, nextActionMutationRevision: state.nextActionMutationRevision + 1 };
           });
         },
 
@@ -669,7 +739,9 @@ export const useTerminalStore = create<TerminalStore>()(
             };
             const sessions = new Map(state.sessions);
             sessions.set(key, { ...current, tabs: nextTabs });
-            return { sessions };
+            const actionMutationRevisions = new Map(state.actionMutationRevisions);
+            updateActionMutationRevision(actionMutationRevisions, key, actionId, state.nextActionMutationRevision);
+            return { sessions, actionMutationRevisions, nextActionMutationRevision: state.nextActionMutationRevision + 1 };
           });
           return executionId;
         },
@@ -713,9 +785,19 @@ export const useTerminalStore = create<TerminalStore>()(
             const nextTabs = [...existing.tabs];
             nextTabs[idx] = nextTab;
             newSessions.set(key, { ...existing, tabs: nextTabs });
-            const nextState: Pick<TerminalStore, 'sessions'> & { buffers?: Map<string, TerminalBuffer> } = {
+            const nextState: Pick<TerminalStore, 'sessions' | 'nextActionMutationRevision'> & {
+              buffers?: Map<string, TerminalBuffer>;
+              actionMutationRevisions?: Map<string, number>;
+            } = {
               sessions: newSessions,
+              nextActionMutationRevision: state.nextActionMutationRevision,
             };
+            if (isProjectActionPurpose(tab.purpose)) {
+              const actionMutationRevisions = new Map(state.actionMutationRevisions);
+              updateActionMutationRevision(actionMutationRevisions, key, tab.purpose.actionId, state.nextActionMutationRevision);
+              nextState.actionMutationRevisions = actionMutationRevisions;
+              nextState.nextActionMutationRevision = state.nextActionMutationRevision + 1;
+            }
             if (nextBuffers) {
               nextState.buffers = nextBuffers;
             }
@@ -918,18 +1000,31 @@ export const useTerminalStore = create<TerminalStore>()(
             newSessions.delete(key);
             const prefix = bufferKey(key, '');
             const nextBuffers = dropBufferKeys(state.buffers, (entryKey) => entryKey.startsWith(prefix));
-            const nextState: Pick<TerminalStore, 'sessions'> & { buffers?: Map<string, TerminalBuffer> } = {
+            const revisionPrefix = actionMutationRevisionKey(key, '');
+            let actionMutationRevisions: Map<string, number> | undefined;
+            for (const actionKey of state.actionMutationRevisions.keys()) {
+              if (!actionKey.startsWith(revisionPrefix)) continue;
+              actionMutationRevisions ??= new Map(state.actionMutationRevisions);
+              actionMutationRevisions.delete(actionKey);
+            }
+            const nextState: Pick<TerminalStore, 'sessions'> & {
+              buffers?: Map<string, TerminalBuffer>;
+              actionMutationRevisions?: Map<string, number>;
+            } = {
               sessions: newSessions,
             };
             if (nextBuffers) {
               nextState.buffers = nextBuffers;
+            }
+            if (actionMutationRevisions) {
+              nextState.actionMutationRevisions = actionMutationRevisions;
             }
             return nextState;
           });
         },
 
         clearAll: () => {
-          set({ sessions: new Map(), buffers: new Map(), nextChunkId: 1, nextTabId: 1 });
+          set({ sessions: new Map(), buffers: new Map(), actionMutationRevisions: new Map(), nextActionMutationRevision: 1, nextChunkId: 1, nextTabId: 1 });
         },
       }),
       {
@@ -1024,6 +1119,8 @@ export const useTerminalStore = create<TerminalStore>()(
             ...currentState,
             sessions,
             buffers: new Map(),
+            actionMutationRevisions: new Map(),
+            nextActionMutationRevision: 1,
             nextChunkId: 1,
             nextTabId,
             hasHydrated: true,

@@ -67,6 +67,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
     const closeTab = useTerminalStore((s) => s.closeTab);
     const setTabSessionId = useTerminalStore((s) => s.setTabSessionId);
     const reconcileServerSessions = useTerminalStore((s) => s.reconcileServerSessions);
+    const captureStartedActionMutationRevisions = useTerminalStore((s) => s.captureStartedActionMutationRevisions);
     const setTabLifecycle = useTerminalStore((s) => s.setTabLifecycle);
     const setConnecting = useTerminalStore((s) => s.setConnecting);
     const appendToBuffer = useTerminalStore((s) => s.appendToBuffer);
@@ -206,15 +207,19 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible }) => {
         }
         let cancelled = false;
         const directory = effectiveDirectory;
-        void reconcileTerminalSessionAuthority(terminal, directory)
-            .then((serverSessions) => {
-                if (cancelled || directoryRef.current !== directory || !serverSessions) return;
-                reconcileServerSessions(directory, serverSessions);
+        void reconcileTerminalSessionAuthority(terminal, directory, {
+            captureStartedActionMutationRevisions,
+        })
+            .then((result) => {
+                if (cancelled || directoryRef.current !== directory || !result) return;
+                reconcileServerSessions(directory, result.sessions, {
+                    startedActionMutationRevisions: result.startedActionMutationRevisions,
+                });
             });
         return () => {
             cancelled = true;
         };
-    }, [terminalHydrated, effectiveDirectory, terminal, reconcileServerSessions]);
+    }, [captureStartedActionMutationRevisions, terminalHydrated, effectiveDirectory, terminal, reconcileServerSessions]);
 
     // The server reaps terminals with no attached socket after an idle timeout,
     // but only the active tab holds an attachment. While this client is open,

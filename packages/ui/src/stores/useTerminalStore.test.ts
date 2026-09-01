@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+
+import type { TerminalServerSession } from '@/lib/api/types';
+
 import { useTerminalStore } from './useTerminalStore';
 
 const setup = () => {
@@ -8,6 +11,27 @@ const setup = () => {
 };
 
 const buffer = (tabId: string) => useTerminalStore.getState().getBuffer('/repo', tabId);
+
+const staleBuildSession: TerminalServerSession = {
+  sessionId: 'srv-old',
+  cwd: '/repo',
+  status: 'running',
+  createdAt: 1,
+  mode: 'command',
+  purpose: { type: 'project-action', actionId: 'build', executionId: 'exec-old' },
+};
+
+const captureStartedActionMutationRevisions = (directory: string) => {
+  return useTerminalStore.getState().captureStartedActionMutationRevisions(directory);
+};
+
+const reconcileServerSessionsWithStartedRevisions = (
+  directory: string,
+  serverSessions: TerminalServerSession[],
+  startedActionMutationRevisions: ReadonlyMap<string, number>,
+) => {
+  useTerminalStore.getState().reconcileServerSessions(directory, serverSessions, { startedActionMutationRevisions });
+};
 
 describe('terminal state reconciliation', () => {
   afterEach(() => useTerminalStore.getState().clearAll());
@@ -124,6 +148,95 @@ describe('terminal state reconciliation', () => {
     expect(tab.lifecycle).toBe('exited');
     expect(tab.purpose).toEqual({ type: 'project-action', actionId: 'build', executionId: null });
     expect(useTerminalStore.getState().getDirectoryState('/other')).toBe(otherBefore);
+  });
+
+  test('an old empty snapshot preserves a newer starting action execution', () => {
+    const tabId = setup();
+    const startedActionMutationRevisions = captureStartedActionMutationRevisions('/repo');
+
+    const executionId = useTerminalStore.getState().allocateActionExecution('/repo', tabId, 'build');
+
+    expect(executionId).not.toBeNull();
+
+    reconcileServerSessionsWithStartedRevisions('/repo', [], startedActionMutationRevisions);
+
+    const tab = useTerminalStore.getState().getDirectoryState('/repo')!.tabs[0]!;
+    expect(tab.lifecycle).toBe('starting');
+    expect(tab.purpose).toEqual({ type: 'project-action', actionId: 'build', executionId });
+    expect(tab.terminalSessionId).toBeNull();
+  });
+
+  test('an old empty snapshot still preserves the action after it becomes running before apply', () => {
+    const tabId = setup();
+    const startedActionMutationRevisions = captureStartedActionMutationRevisions('/repo');
+
+    const executionId = useTerminalStore.getState().allocateActionExecution('/repo', tabId, 'build');
+    if (!executionId) {
+      throw new Error('expected execution id');
+    }
+    useTerminalStore.getState().setTabSessionId('/repo', tabId, 'srv-build', { expectedExecutionId: executionId });
+
+    reconcileServerSessionsWithStartedRevisions('/repo', [], startedActionMutationRevisions);
+
+    const tab = useTerminalStore.getState().getDirectoryState('/repo')!.tabs[0]!;
+    expect(tab.lifecycle).toBe('running');
+    expect(tab.purpose).toEqual({ type: 'project-action', actionId: 'build', executionId });
+    expect(tab.terminalSessionId).toBe('srv-build');
+  });
+
+  test('an old listed action session does not overwrite a newer execution after allocate', () => {
+    const tabId = setup();
+    useTerminalStore.getState().setTabPurpose('/repo', tabId, { type: 'project-action', actionId: 'build', executionId: 'exec-old' });
+    useTerminalStore.getState().setTabSessionId('/repo', tabId, 'srv-old', { expectedExecutionId: 'exec-old' });
+
+    const startedActionMutationRevisions = captureStartedActionMutationRevisions('/repo');
+    const executionId = useTerminalStore.getState().allocateActionExecution('/repo', tabId, 'build');
+
+    reconcileServerSessionsWithStartedRevisions('/repo', [staleBuildSession], startedActionMutationRevisions);
+
+    const tab = useTerminalStore.getState().getDirectoryState('/repo')!.tabs[0]!;
+    expect(tab.lifecycle).toBe('starting');
+    expect(tab.purpose).toEqual({ type: 'project-action', actionId: 'build', executionId });
+    expect(tab.terminalSessionId).toBe('srv-old');
+  });
+
+  test('an old listed action session does not overwrite a newer running session after setTabSessionId', () => {
+    const tabId = setup();
+    useTerminalStore.getState().setTabPurpose('/repo', tabId, { type: 'project-action', actionId: 'build', executionId: 'exec-old' });
+    useTerminalStore.getState().setTabSessionId('/repo', tabId, 'srv-old', { expectedExecutionId: 'exec-old' });
+
+    const startedActionMutationRevisions = captureStartedActionMutationRevisions('/repo');
+    const executionId = useTerminalStore.getState().allocateActionExecution('/repo', tabId, 'build');
+    if (!executionId) {
+      throw new Error('expected execution id');
+    }
+    useTerminalStore.getState().setTabSessionId('/repo', tabId, 'srv-new', { expectedExecutionId: executionId });
+
+    reconcileServerSessionsWithStartedRevisions('/repo', [staleBuildSession], startedActionMutationRevisions);
+
+    const tabs = useTerminalStore.getState().getDirectoryState('/repo')!.tabs;
+    expect(tabs).toHaveLength(1);
+    const tab = tabs[0]!;
+    expect(tab.lifecycle).toBe('running');
+    expect(tab.purpose).toEqual({ type: 'project-action', actionId: 'build', executionId });
+    expect(tab.terminalSessionId).toBe('srv-new');
+  });
+
+  test('a fresh empty snapshot still clears an omitted action execution', () => {
+    const tabId = setup();
+    const executionId = useTerminalStore.getState().allocateActionExecution('/repo', tabId, 'build');
+    if (!executionId) {
+      throw new Error('expected execution id');
+    }
+    useTerminalStore.getState().setTabSessionId('/repo', tabId, 'srv-build', { expectedExecutionId: executionId });
+
+    const startedActionMutationRevisions = captureStartedActionMutationRevisions('/repo');
+    reconcileServerSessionsWithStartedRevisions('/repo', [], startedActionMutationRevisions);
+
+    const tab = useTerminalStore.getState().getDirectoryState('/repo')!.tabs[0]!;
+    expect(tab.lifecycle).toBe('exited');
+    expect(tab.purpose).toEqual({ type: 'project-action', actionId: 'build', executionId: null });
+    expect(tab.terminalSessionId).toBe('srv-build');
   });
 
   test('execution-guarded transitions ignore stale completions after a rerun', () => {

@@ -122,6 +122,10 @@ Invariants to preserve when editing:
   projection while both are referentially unchanged, and the storage adapter skips a write
   for an unchanged projection, so streaming output performs no persistence work.
 - Consumers that react to output must subscribe to `buffers`, not `sessions`.
+- Server session listings capture the directory's per-action mutation revisions when the
+  request starts. Coalesced callers share that first snapshot. A response cannot replace or
+  remove an action execution mutated after its request began, while a fresh successful empty
+  response still clears an omitted run.
 
 ## Git / PR Stores
 

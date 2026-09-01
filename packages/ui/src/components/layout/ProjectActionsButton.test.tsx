@@ -14,13 +14,20 @@ const toastCalls = {
   success: new Array<string>(),
 } satisfies { error: string[]; info: string[]; success: string[] };
 
+const openContextPreviewCalls: Array<{ directory: string; url: string }> = [];
+const openExternalCalls: string[] = [];
+const detectedDevServer: MockedDetectedDevServer = { command: null, previewUrlHint: null };
+const mockedDeviceInfo = { isMobile: false, isTablet: false, hasTouchOnlyPointer: false };
+
 const uiState = {
   terminalShell: 'zsh',
   terminalLoginShells: ['zsh'],
   setSettingsPage: () => undefined,
   setSettingsDialogOpen: () => undefined,
   setSettingsProjectsSelectedId: () => undefined,
-  openContextPreview: () => undefined,
+  openContextPreview: (directory: string, url: string) => {
+    openContextPreviewCalls.push({ directory, url });
+  },
   openContextPanelTab: () => undefined,
   openContextSurface: () => undefined,
 };
@@ -41,6 +48,11 @@ type SubscriptionRecord = {
 
 interface MockedActionsState {
   actions: OpenChamberProjectAction[];
+}
+
+interface MockedDetectedDevServer {
+  command: string | null;
+  previewUrlHint: string | null;
 }
 
 const createCalls: CreateTerminalOptions[] = [];
@@ -120,17 +132,24 @@ mock.module('@/components/ui', () => ({
 }));
 mock.module('@/components/icon/Icon', () => ({ Icon: ({ name, className }: { name: string; className?: string }) => React.createElement('span', { 'data-icon': name, className }) }));
 mock.module('@/hooks/useRuntimeAPIs', () => ({ useRuntimeAPIs: () => ({ terminal, runtime: { isVSCode: false, platform: 'web' } }) }));
-mock.module('@/lib/device', () => ({ useDeviceInfo: () => ({ isMobile: true, isTablet: false, hasTouchOnlyPointer: false }) }));
+mock.module('@/lib/device', () => ({ useDeviceInfo: () => mockedDeviceInfo }));
 mock.module('@/lib/desktop', () => ({ isDesktopShell: () => false }));
 mock.module('@/stores/useUIStore', () => ({ useUIStore: useUiStoreMock }));
 mock.module('@/contexts/useThemeSystem', () => ({ useThemeSystem: () => ({ currentTheme: { metadata: { variant: 'dark' }, colors: { surface: { background: '#000' }, syntax: { base: { foreground: '#fff' } } } } }) }));
 mock.module('@/stores/useDesktopSshStore', () => ({ useDesktopSshStore: useDesktopSshStoreMock }));
-mock.module('@/lib/url', () => ({ openExternalUrl: async () => undefined }));
+mock.module('@/lib/url', () => ({ openExternalUrl: async (url: string) => { openExternalCalls.push(url); } }));
 mock.module('@/lib/openchamberConfig', () => ({
   getProjectActionsState: async () => mockedActionsState,
 }));
 mock.module('@/lib/browser/announcedServers', () => ({ setAnnouncedDevServers: () => undefined }));
-mock.module('@/lib/detectDevServer', () => ({ detectDevServerCommand: async () => null, readPackageJsonScripts: async () => ({}) }));
+mock.module('@/lib/detectDevServer', () => ({
+  detectDevServerCommand: async () => (
+    detectedDevServer.command
+      ? { command: detectedDevServer.command, previewUrlHint: detectedDevServer.previewUrlHint ?? undefined }
+      : null
+  ),
+  readPackageJsonScripts: async () => ({}),
+}));
 
 const { ProjectActionsButton } = await import('./ProjectActionsButton');
 
@@ -164,6 +183,11 @@ describe('ProjectActionsButton lifecycle', () => {
     toastCalls.error.length = 0;
     toastCalls.info.length = 0;
     toastCalls.success.length = 0;
+    openContextPreviewCalls.length = 0;
+    openExternalCalls.length = 0;
+    detectedDevServer.command = null;
+    detectedDevServer.previewUrlHint = null;
+    mockedDeviceInfo.isMobile = true;
     sessionCounter = 0;
     mockedActionsState.actions = [{ id: 'build', name: 'Build', command: 'echo hello', icon: 'build' }];
   });
@@ -276,5 +300,77 @@ describe('ProjectActionsButton lifecycle', () => {
     expect(createCalls[0]?.cwd).toBe('/repo-worktree');
     expect(useTerminalStore.getState().getDirectoryState('/repo-worktree')?.tabs.some((tab) => tab.purpose.type === 'project-action' && tab.purpose.actionId === 'build')).toBe(true);
     expect(useTerminalStore.getState().getDirectoryState('/repo')?.tabs.some((tab) => tab.purpose.type === 'project-action') ?? false).toBe(false);
+  });
+
+  test('auto-discover without a preview hint settles on an announced localhost URL in context preview only', async () => {
+    mockedDeviceInfo.isMobile = false;
+    detectedDevServer.command = 'bun run dev';
+    await renderButton();
+
+    const primaryButton = host.querySelector('button');
+    if (!primaryButton) {
+      throw new Error('expected primary button');
+    }
+
+    await act(async () => {
+      primaryButton.dispatchEvent(new Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const autoDiscoverTab = useTerminalStore.getState().getDirectoryState('/repo')?.tabs.find((tab) => (
+      tab.purpose.type === 'project-action' && tab.purpose.actionId === '__openchamber_auto_discover_preview__'
+    ));
+    expect(autoDiscoverTab?.terminalSessionId).toBe('session-1');
+
+    await act(async () => {
+      emitToSession('session-1', {
+        type: 'data',
+        data: 'Ready at http://127.0.0.1:4321\n',
+        sequence: 1,
+        replayData: undefined,
+      });
+      await new Promise((resolve) => setTimeout(resolve, 3_100));
+    });
+
+    expect(openContextPreviewCalls).toEqual([{ directory: '/repo', url: 'http://127.0.0.1:4321' }]);
+    expect(openExternalCalls).toEqual([]);
+  });
+
+  test('manual action URL does not open a second output-derived URL', async () => {
+    mockedActionsState.actions = [{
+      id: 'build',
+      name: 'Build',
+      command: 'echo hello',
+      icon: 'build',
+      autoOpenUrl: true,
+      openUrl: '127.0.0.1:3000',
+    }];
+    await renderButton();
+
+    const primaryButton = host.querySelector('button');
+    if (!primaryButton) {
+      throw new Error('expected primary button');
+    }
+
+    await act(async () => {
+      primaryButton.dispatchEvent(new Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(openContextPreviewCalls).toEqual([{ directory: '/repo', url: 'http://127.0.0.1:3000/' }]);
+    expect(openExternalCalls).toEqual([]);
+
+    await act(async () => {
+      emitToSession('session-1', {
+        type: 'data',
+        data: 'Server listening at http://127.0.0.1:4000\n',
+        sequence: 1,
+        replayData: undefined,
+      });
+      await Promise.resolve();
+    });
+
+    expect(openContextPreviewCalls).toEqual([{ directory: '/repo', url: 'http://127.0.0.1:3000/' }]);
+    expect(openExternalCalls).toEqual([]);
   });
 });

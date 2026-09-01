@@ -157,6 +157,7 @@ describe('project action terminal lifecycle', () => {
   test('reuses one in-flight authority listing per directory', async () => {
     let calls = 0;
     let resolveSessions: ((value: Array<{ sessionId: string; cwd: string; status: 'running'; createdAt: number | null }>) => void) | undefined;
+    const capturedRevisions: number[] = [];
     const terminal: TerminalAPI = {
       listSessions: async () => {
         calls += 1;
@@ -170,17 +171,52 @@ describe('project action terminal lifecycle', () => {
       resize: async () => {},
       close: async () => {},
     };
+    const captureStartedActionMutationRevisions = () => {
+      const revision = capturedRevisions.length + 1;
+      capturedRevisions.push(revision);
+      return new Map([['/repo::build', revision]]);
+    };
 
-    const first = reconcileTerminalSessionAuthority(terminal, '/repo');
-    const second = reconcileTerminalSessionAuthority(terminal, '/repo');
+    const first = reconcileTerminalSessionAuthority(terminal, '/repo', {
+      captureStartedActionMutationRevisions,
+    });
+    const second = reconcileTerminalSessionAuthority(terminal, '/repo', {
+      captureStartedActionMutationRevisions,
+    });
     expect(first).toBe(second);
     const finishListing = resolveSessions;
     if (!finishListing) {
       throw new Error('list resolver was not captured');
     }
     finishListing([{ sessionId: 'srv-1', cwd: '/repo', status: 'running', createdAt: 1 }]);
-    expect(await first).toEqual([{ sessionId: 'srv-1', cwd: '/repo', status: 'running', createdAt: 1 }]);
+    expect(await first).toEqual({
+      sessions: [{ sessionId: 'srv-1', cwd: '/repo', status: 'running', createdAt: 1 }],
+      startedActionMutationRevisions: new Map([['/repo::build', 1]]),
+    });
     expect(calls).toBe(1);
+    expect(capturedRevisions).toEqual([1]);
+  });
+
+  test('does not share an authority listing across runtime adapters', async () => {
+    const calls: string[] = [];
+    const createTerminal = (name: string): TerminalAPI => ({
+      listSessions: async () => {
+        calls.push(name);
+        return [];
+      },
+      createSession: async () => ({ sessionId: 'ignored', cols: 80, rows: 24, status: 'running' }),
+      connect: () => ({ close: () => {} }),
+      sendInput: async () => {},
+      resize: async () => {},
+      close: async () => {},
+    });
+
+    await Promise.all([
+      reconcileTerminalSessionAuthority(createTerminal('runtime-a'), '/repo'),
+      reconcileTerminalSessionAuthority(createTerminal('runtime-b'), '/repo'),
+    ]);
+
+    expect(calls).toEqual(['runtime-a', 'runtime-b']);
   });
 
   test('stale stop completion does not interrupt or force-kill a newer execution and cleanup runs once', async () => {
