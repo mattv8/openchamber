@@ -805,7 +805,7 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
     }, [directory, fetchStatus, file.path, fileAction, git, t]);
 
     return (
-        <div ref={setSectionRef} className="scroll-mt-9 border-b border-[var(--interactive-border)]/40 last:border-b-0">
+        <div ref={setSectionRef} data-diff-file-path={file.path} className="scroll-mt-9 border-b border-[var(--interactive-border)]/40 last:border-b-0">
             <div className="sticky top-0 z-30 border-b border-[var(--interactive-border)]/35 bg-[var(--surface-elevated)]/90 backdrop-blur-md supports-[backdrop-filter]:bg-[var(--surface-elevated)]/80">
                 <div
                     role="button"
@@ -998,6 +998,7 @@ interface DiffViewProps {
     snapshotSource?: DiffViewSnapshotSource;
     diffScope?: DiffScope;
     onDiffScopeChange?: (scope: Extract<DiffScope, 'working' | 'staged' | 'turn' | 'branch'>) => void;
+    singleFilePath?: string | null;
     targetFilePath?: string | null;
     /** Render diff content flush with the container edges (no outer padding). */
     flushContent?: boolean;
@@ -1011,6 +1012,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
     snapshotSource,
     diffScope = 'all',
     onDiffScopeChange,
+    singleFilePath = null,
     targetFilePath = null,
     flushContent = false,
 }) => {
@@ -1075,6 +1077,14 @@ export const DiffView: React.FC<DiffViewProps> = ({
             contextMode: 'full' as const,
         }]),
     ), [snapshotSource]);
+    const normalizedSingleFilePath = React.useMemo(() => {
+        const trimmed = singleFilePath?.trim();
+        return trimmed || null;
+    }, [singleFilePath]);
+    const normalizedTargetFilePath = React.useMemo(() => {
+        const trimmed = targetFilePath?.trim();
+        return trimmed || null;
+    }, [targetFilePath]);
     const forcedStaged = activeDiffScope === 'staged' ? true : activeDiffScope === 'working' ? false : null;
     const activeDiffStaged = forcedStaged ?? displayFileStaged;
 
@@ -1346,7 +1356,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
 
     const branchFileCount = branchFiles?.length ?? null;
 
-    const changedFiles: FileEntry[] = React.useMemo(() => {
+    const scopeChangedFiles: FileEntry[] = React.useMemo(() => {
         if (snapshotSource) {
             return snapshotSource.files.map((file) => ({
                 path: file.path,
@@ -1403,6 +1413,14 @@ export const DiffView: React.FC<DiffViewProps> = ({
             }))
             .sort((a, b) => a.path.localeCompare(b.path));
     }, [activeDiffScope, branchFiles, lastTurnDiffs, snapshotSource, status]);
+
+    const changedFiles = React.useMemo(() => {
+        if (!normalizedSingleFilePath) {
+            return scopeChangedFiles;
+        }
+
+        return scopeChangedFiles.filter((file) => file.path === normalizedSingleFilePath);
+    }, [normalizedSingleFilePath, scopeChangedFiles]);
 
     const changedFilePathsKey = React.useMemo(
         () => changedFiles.map((file) => file.path).join('\0'),
@@ -1592,6 +1610,10 @@ export const DiffView: React.FC<DiffViewProps> = ({
         }
 
         if (pendingDiffFile) {
+            const trimmedPendingDiffFile = pendingDiffFile.trim();
+            if (normalizedSingleFilePath && trimmedPendingDiffFile !== normalizedSingleFilePath) {
+                return;
+            }
             if (pendingDiffScope) {
                 setActiveDiffScope(pendingDiffScope);
             }
@@ -1603,14 +1625,14 @@ export const DiffView: React.FC<DiffViewProps> = ({
             expandStackedFile(pendingDiffFile);
             setScrollRequestNonce((value) => value + 1);
         }
-    }, [activeDiffScope, expandStackedFile, pendingDiffFile, pendingDiffScope, pendingDiffStaged, setPendingDiffFile]);
+    }, [activeDiffScope, expandStackedFile, normalizedSingleFilePath, pendingDiffFile, pendingDiffScope, pendingDiffStaged, setPendingDiffFile]);
 
     React.useEffect(() => {
         if (activeDiffScope === 'all') {
             return;
         }
 
-        const normalizedTarget = targetFilePath?.trim();
+        const normalizedTarget = normalizedSingleFilePath ?? normalizedTargetFilePath;
         if (!normalizedTarget) {
             return;
         }
@@ -1622,7 +1644,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
         pendingScrollTargetRef.current = normalizedTarget;
         expandStackedFile(normalizedTarget);
         setScrollRequestNonce((value) => value + 1);
-    }, [activeDiffScope, expandStackedFile, targetFilePath]);
+    }, [activeDiffScope, expandStackedFile, normalizedSingleFilePath, normalizedTargetFilePath]);
 
     React.useEffect(() => {
         if (!displayFile) {
@@ -1921,7 +1943,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
                     <section className="hidden lg:flex w-72 flex-col rounded-xl border border-border/60 bg-background/70 overflow-hidden">
                         <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/40">
                             <span className="typography-ui-header font-semibold text-foreground">{t('diffView.section.files')}</span>
-                            <span className="typography-meta text-muted-foreground">{changedFiles.length}</span>
+                            <span className="typography-meta text-muted-foreground">{scopeChangedFiles.length}</span>
                         </div>
                         <FileList
                             changedFiles={changedFiles}
@@ -2092,6 +2114,17 @@ export const DiffView: React.FC<DiffViewProps> = ({
         }
 
         if (changedFiles.length === 0) {
+            if (normalizedSingleFilePath) {
+                return (
+                    <div
+                        data-diff-empty-state="single-file"
+                        className="flex flex-1 items-center justify-center text-sm text-muted-foreground"
+                    >
+                        {t('diffView.state.fileUnchangedInScope')}
+                    </div>
+                );
+            }
+
             return (
                 <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
                     {activeDiffScope === 'turn' ? t('diffView.state.noLastTurnChanges')
@@ -2136,9 +2169,9 @@ export const DiffView: React.FC<DiffViewProps> = ({
                             <span className="typography-ui-label font-semibold text-foreground">
                                 {isLoadingStatus && !status
                                     ? t('diffView.state.loadingChanges')
-                                    : (changedFiles.length === 1
-                                        ? t('diffView.summary.changedFilesSingle', { count: changedFiles.length })
-                                        : t('diffView.summary.changedFilesPlural', { count: changedFiles.length }))}
+                                    : (scopeChangedFiles.length === 1
+                                        ? t('diffView.summary.changedFilesSingle', { count: scopeChangedFiles.length })
+                                        : t('diffView.summary.changedFilesPlural', { count: scopeChangedFiles.length }))}
                             </span>
                         </div>
                     )
@@ -2163,7 +2196,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
                         </span>
                     </Button>
                 )}
-                {changedFiles.length > 0 && showReviewAction && (
+                {scopeChangedFiles.length > 0 && showReviewAction && (
                     <Button
                         variant="default"
                         size="sm"
@@ -2182,7 +2215,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
                         </span>
                     </Button>
                 )}
-                {changedFiles.length > 0 && showWalkthroughAction && (
+                {scopeChangedFiles.length > 0 && showWalkthroughAction && (
                     <Button
                         variant="outline"
                         size="sm"
