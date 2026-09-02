@@ -50,8 +50,6 @@ export type GitCommitDiffTarget = {
 
 export type GitRepositoryPaneState = {
   changesCollapsed: boolean;
-  graphCollapsed: boolean;
-  graphHeight: number;
   graphFilterMode: GitGraphFilterMode;
   graphManualRefIds: string[];
 };
@@ -244,6 +242,9 @@ const normalizeRepositoryScopedDirectoryKey = (value: string): string => normali
 
 const GIT_REPOSITORY_PANE_GRAPH_HEIGHT_MIN = 180;
 const GIT_REPOSITORY_PANE_GRAPH_HEIGHT_MAX = 720;
+const DEFAULT_GIT_GRAPH_PANE_COLLAPSED = true;
+const DEFAULT_GIT_GRAPH_PANE_HEIGHT = 280;
+const gitGraphPaneCollapsedSchema = z.boolean().catch(DEFAULT_GIT_GRAPH_PANE_COLLAPSED);
 const gitGraphFilterModeSchema = z.enum(['auto', 'all', 'manual']);
 const gitRepositoryPaneManualRefIdsSchema = z.array(z.string().catch('')).catch([]).transform((ids) => Array.from(
   new Set(ids.map((item) => item.trim()).filter((item) => item !== ''))
@@ -251,8 +252,6 @@ const gitRepositoryPaneManualRefIdsSchema = z.array(z.string().catch('')).catch(
 
 export const DEFAULT_GIT_REPOSITORY_PANE_STATE: GitRepositoryPaneState = {
   changesCollapsed: false,
-  graphCollapsed: true,
-  graphHeight: 280,
   graphFilterMode: 'auto',
   graphManualRefIds: [],
 };
@@ -261,16 +260,15 @@ const createDefaultGitRepositoryPaneState = (): GitRepositoryPaneState => ({ ...
 
 const clampGitRepositoryPaneGraphHeight = (value: number): number => {
   if (!Number.isFinite(value)) {
-    return createDefaultGitRepositoryPaneState().graphHeight;
+    return DEFAULT_GIT_GRAPH_PANE_HEIGHT;
   }
 
   return Math.min(GIT_REPOSITORY_PANE_GRAPH_HEIGHT_MAX, Math.max(GIT_REPOSITORY_PANE_GRAPH_HEIGHT_MIN, Math.round(value)));
 };
+const gitGraphPaneHeightSchema = z.coerce.number().catch(DEFAULT_GIT_GRAPH_PANE_HEIGHT).transform(clampGitRepositoryPaneGraphHeight);
 
 const gitRepositoryPaneStateSchema = z.object({
   changesCollapsed: z.boolean().catch(DEFAULT_GIT_REPOSITORY_PANE_STATE.changesCollapsed),
-  graphCollapsed: z.boolean().catch(DEFAULT_GIT_REPOSITORY_PANE_STATE.graphCollapsed),
-  graphHeight: z.coerce.number().catch(DEFAULT_GIT_REPOSITORY_PANE_STATE.graphHeight).transform(clampGitRepositoryPaneGraphHeight),
   graphFilterMode: gitGraphFilterModeSchema.catch(DEFAULT_GIT_REPOSITORY_PANE_STATE.graphFilterMode),
   graphManualRefIds: gitRepositoryPaneManualRefIdsSchema,
 }).catch(DEFAULT_GIT_REPOSITORY_PANE_STATE);
@@ -1100,6 +1098,8 @@ interface UIStore {
   /** One-shot identifier for opening a Linear issue in the rail panel. Not persisted. */
   linearIssueFocus: string | null;
   gitReviewLayout: GitReviewLayout;
+  gitGraphPaneCollapsed: boolean;
+  gitGraphPaneHeight: number;
   gitRepositoryPaneStates: Record<string, GitRepositoryPaneState>;
   isTimelineDialogOpen: boolean;
   isPromptNavigatorPanelOpen: boolean;
@@ -1312,6 +1312,8 @@ interface UIStore {
   resetLinearIssueListFilters: () => void;
   setLinearIssueFocus: (identifier: string | null) => void;
   setGitReviewLayout: (layout: GitReviewLayout) => void;
+  setGitGraphPaneCollapsed: (collapsed: boolean) => void;
+  setGitGraphPaneHeight: (height: number) => void;
   getGitRepositoryPaneState: (directory: string, runtimeKey?: string | null) => GitRepositoryPaneState;
   setGitRepositoryPaneState: (
     directory: string,
@@ -1486,6 +1488,8 @@ export const useUIStore = create<UIStore>()(
         linearIssueListPriority: 'all',
         linearIssueFocus: null,
         gitReviewLayout: 'separate',
+        gitGraphPaneCollapsed: DEFAULT_GIT_GRAPH_PANE_COLLAPSED,
+        gitGraphPaneHeight: DEFAULT_GIT_GRAPH_PANE_HEIGHT,
         gitRepositoryPaneStates: {},
         isTimelineDialogOpen: false,
         isPromptNavigatorPanelOpen: false,
@@ -2570,6 +2574,14 @@ export const useUIStore = create<UIStore>()(
         setGitReviewLayout: (layout) => {
           set({ gitReviewLayout: layout });
         },
+        setGitGraphPaneCollapsed: (collapsed) => {
+          const nextCollapsed = collapsed;
+          set((state) => state.gitGraphPaneCollapsed === nextCollapsed ? state : { gitGraphPaneCollapsed: nextCollapsed });
+        },
+        setGitGraphPaneHeight: (height) => {
+          const nextHeight = clampGitRepositoryPaneGraphHeight(height);
+          set((state) => state.gitGraphPaneHeight === nextHeight ? state : { gitGraphPaneHeight: nextHeight });
+        },
         getGitRepositoryPaneState: (directory, runtimeKey) => {
           const key = gitRepositoryPanePreferenceKey(directory, runtimeKey);
           return get().gitRepositoryPaneStates[key] ?? createDefaultGitRepositoryPaneState();
@@ -2582,8 +2594,6 @@ export const useUIStore = create<UIStore>()(
             const next = sanitizeGitRepositoryPaneState({ ...current, ...patch });
             if (
               next.changesCollapsed === current.changesCollapsed
-              && next.graphCollapsed === current.graphCollapsed
-              && next.graphHeight === current.graphHeight
               && next.graphFilterMode === current.graphFilterMode
               && next.graphManualRefIds.length === current.graphManualRefIds.length
               && next.graphManualRefIds.every((id, index) => id === current.graphManualRefIds[index])
@@ -3273,6 +3283,8 @@ export const useUIStore = create<UIStore>()(
           if (state.gitReviewLayout !== 'separate' && state.gitReviewLayout !== 'combined') {
             state.gitReviewLayout = 'separate';
           }
+          state.gitGraphPaneCollapsed = gitGraphPaneCollapsedSchema.parse(state.gitGraphPaneCollapsed);
+          state.gitGraphPaneHeight = gitGraphPaneHeightSchema.parse(state.gitGraphPaneHeight);
 
           if (version < 17) {
             state.contextPanelByDirectory = sanitizeContextPanelByDirectory(state.contextPanelByDirectory);
@@ -3369,6 +3381,8 @@ export const useUIStore = create<UIStore>()(
           linearIssueListTeamIdByRuntime: state.linearIssueListTeamIdByRuntime,
           linearIssueListPriority: state.linearIssueListPriority,
           gitReviewLayout: state.gitReviewLayout,
+          gitGraphPaneCollapsed: state.gitGraphPaneCollapsed,
+          gitGraphPaneHeight: state.gitGraphPaneHeight,
           gitRepositoryPaneStates: state.gitRepositoryPaneStates,
           nativeNotificationsEnabled: state.nativeNotificationsEnabled,
           notificationMode: state.notificationMode,
