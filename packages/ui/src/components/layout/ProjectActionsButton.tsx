@@ -12,6 +12,7 @@ import { Icon } from "@/components/icon/Icon";
 import type { IconName } from '@/components/icon/icons';
 import { cn } from '@/lib/utils';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
+import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { useDeviceInfo } from '@/lib/device';
 import { isDesktopShell } from '@/lib/desktop';
 import { useUIStore } from '@/stores/useUIStore';
@@ -44,6 +45,7 @@ import {
 import type { TerminalTab } from '@/stores/useTerminalStore';
 
 type UrlWatchEntry = {
+  hostDirectory: string;
   directory: string;
   tabId: string;
   actionId: string;
@@ -112,6 +114,7 @@ export const ProjectActionsButton = ({
   const { t } = useI18n();
   const { currentTheme } = useThemeSystem();
   const { terminal, runtime } = useRuntimeAPIs();
+  const effectiveDirectory = useEffectiveDirectory();
   const { isMobile } = useDeviceInfo();
   const isDesktopShellApp = React.useMemo(() => isDesktopShell(), []);
   const desktopSshInstances = useDesktopSshStore((state) => state.instances);
@@ -214,6 +217,14 @@ export const ProjectActionsButton = ({
     return normalizeProjectActionDirectory(stableProjectRef?.path || '');
   }, [stableProjectRef?.path]);
 
+  const contextHostDirectory = React.useMemo(() => {
+    return normalizeProjectActionDirectory(effectiveDirectory || '') || normalizedDirectory;
+  }, [effectiveDirectory, normalizedDirectory]);
+  const contextHostDirectoryRef = React.useRef(contextHostDirectory);
+  React.useEffect(() => {
+    contextHostDirectoryRef.current = contextHostDirectory;
+  }, [contextHostDirectory]);
+
   const directoryTerminalState = useTerminalStore((state) => (
     normalizedDirectory ? state.sessions.get(normalizedDirectory) : undefined
   ));
@@ -310,6 +321,13 @@ export const ProjectActionsButton = ({
       return next;
     });
   }, [executionKey]);
+
+  const revealProjectActionTerminal = React.useCallback((hostDirectory: string, executionDirectory: string) => {
+    useUIStore.getState().openContextPanelTab(hostDirectory, {
+      mode: 'terminal',
+      targetDirectory: executionDirectory === hostDirectory ? null : executionDirectory,
+    });
+  }, []);
 
   const selectedAction = React.useMemo(() => {
     if (!selectedActionId) {
@@ -468,6 +486,7 @@ export const ProjectActionsButton = ({
         const watch = existingWatch?.executionId === entry.executionId
           ? existingWatch
           : {
+              hostDirectory: contextHostDirectoryRef.current || entry.directory,
               directory: entry.directory,
               tabId: entry.tabId,
               actionId: entry.actionId,
@@ -574,7 +593,7 @@ export const ProjectActionsButton = ({
     return useTerminalStore.subscribe((state, previousState) => {
       if (state.sessions !== previousState.sessions || state.buffers !== previousState.buffers) monitorRuns();
     });
-  }, [clearExecutionUi, displayActions, executionKey, openContextPreview, openExternal, projectActionRuns, setTabPreviewUrl, t]);
+  }, [clearExecutionUi, contextHostDirectoryRef, displayActions, executionKey, openContextPreview, openExternal, projectActionRuns, setTabPreviewUrl, t]);
 
   React.useEffect(() => {
     for (const { directory: tabDirectory, state } of watchedTerminalStates) {
@@ -622,7 +641,7 @@ export const ProjectActionsButton = ({
     }
   }, [clearExecutionUi, executionKey, matchesActionExecution, terminal, watchedTerminalStates]);
 
-  const getOrCreateActionTab = React.useCallback(async (action: OpenChamberProjectAction, options: { revealTerminal?: boolean } = {}) => {
+  const getOrCreateActionTab = React.useCallback(async (action: OpenChamberProjectAction) => {
     const executionDirectory = executionDirectoryFor(action);
     if (!executionDirectory) {
       throw new Error(t('projectActions.error.noActiveDirectory'));
@@ -641,9 +660,6 @@ export const ProjectActionsButton = ({
       setTabPurpose(executionDirectory, tabId, { type: 'project-action', actionId: action.id, executionId: null });
     }
     setActiveTab(executionDirectory, tabId);
-    if (options.revealTerminal !== false) {
-      useUIStore.getState().openContextPanelTab(executionDirectory, { mode: 'terminal' });
-    }
 
     const stateAfterTab = useTerminalStore.getState().getDirectoryState(executionDirectory);
     const tab = stateAfterTab?.tabs.find((entry) => entry.id === tabId);
@@ -707,7 +723,8 @@ export const ProjectActionsButton = ({
 
       const hasCustomOpenUrl = discovered.autoOpenUrl === true && (discovered.openUrl || '').trim().length > 0;
       const revealTerminal = !hasCustomOpenUrl && action.id !== AUTO_DISCOVER_ACTION_ID;
-      const { executionDirectory, key, tabId, sessionId } = await getOrCreateActionTab(discovered, { revealTerminal });
+      const launchContextHostDirectory = contextHostDirectoryRef.current || normalizedDirectory;
+      const { executionDirectory, key, tabId, sessionId } = await getOrCreateActionTab(discovered);
       const normalizedCommand = normalizeProjectActionCommand(discovered.command);
       if (!normalizedCommand) {
         throw new Error(t('projectActions.error.failedToRunAction'));
@@ -792,6 +809,10 @@ export const ProjectActionsButton = ({
         return;
       }
 
+      if (revealTerminal && launchContextHostDirectory) {
+        revealProjectActionTerminal(launchContextHostDirectory, executionDirectory);
+      }
+
       const executionStateKey = executionKey(executionDirectory, discovered.id, adoptedExecutionId);
       setConnecting(executionDirectory, tabId, true, { expectedExecutionId: adoptedExecutionId });
       const subscription = terminal.connect(
@@ -858,11 +879,12 @@ export const ProjectActionsButton = ({
             return next;
           });
           useTerminalStore.getState().setActiveTab(executionDirectory, tabId);
-          useUIStore.getState().openContextPanelTab(executionDirectory, { mode: 'terminal' });
+          revealProjectActionTerminal(watch.hostDirectory, executionDirectory);
         }, AUTO_DISCOVER_PREVIEW_WAIT_TIMEOUT_MS);
       }
 
       urlWatchByRunKeyRef.current[key] = {
+        hostDirectory: launchContextHostDirectory,
         directory: executionDirectory,
         tabId,
         actionId: discovered.id,
@@ -916,6 +938,7 @@ export const ProjectActionsButton = ({
     currentTheme.colors.surface.background,
     currentTheme.colors.syntax.base.foreground,
     currentTheme.metadata.variant,
+    contextHostDirectoryRef,
     desktopSshInstances,
     getOrCreateActionTab,
     allowMobile,
@@ -927,6 +950,7 @@ export const ProjectActionsButton = ({
     openExternal,
     openContextPreview,
     projectActionRuns,
+    revealProjectActionTerminal,
     runtime.isVSCode,
     executionDirectoryFor,
     matchesActionExecution,

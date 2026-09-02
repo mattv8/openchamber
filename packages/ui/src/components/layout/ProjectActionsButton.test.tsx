@@ -15,10 +15,11 @@ const toastCalls = {
 } satisfies { error: string[]; info: string[]; success: string[] };
 
 const openContextPreviewCalls: Array<{ directory: string; url: string }> = [];
-const openContextPanelTabCalls: Array<{ directory: string; mode: string }> = [];
+const openContextPanelTabCalls: Array<{ directory: string; mode: string; targetDirectory: string | null | undefined }> = [];
 const openExternalCalls: string[] = [];
 const detectedDevServer: MockedDetectedDevServer = { command: null, previewUrlHint: null };
 const mockedDeviceInfo = { isMobile: false, isTablet: false, hasTouchOnlyPointer: false };
+let effectiveDirectory = '/repo';
 
 const uiState = {
   terminalShell: 'zsh',
@@ -29,8 +30,8 @@ const uiState = {
   openContextPreview: (directory: string, url: string) => {
     openContextPreviewCalls.push({ directory, url });
   },
-  openContextPanelTab: (directory: string, options: { mode: string }) => {
-    openContextPanelTabCalls.push({ directory, mode: options.mode });
+  openContextPanelTab: (directory: string, options: { mode: string; targetDirectory?: string | null }) => {
+    openContextPanelTabCalls.push({ directory, mode: options.mode, targetDirectory: options.targetDirectory });
   },
   openContextSurface: () => undefined,
 };
@@ -145,6 +146,7 @@ mock.module('@/lib/openchamberConfig', () => ({
   getProjectActionsState: async () => mockedActionsState,
 }));
 mock.module('@/lib/browser/announcedServers', () => ({ setAnnouncedDevServers: () => undefined }));
+mock.module('@/hooks/useEffectiveDirectory', () => ({ useEffectiveDirectory: () => effectiveDirectory }));
 mock.module('@/lib/detectDevServer', () => ({
   detectDevServerCommand: async () => (
     detectedDevServer.command
@@ -214,6 +216,7 @@ describe('ProjectActionsButton lifecycle', () => {
     detectedDevServer.command = null;
     detectedDevServer.previewUrlHint = null;
     mockedDeviceInfo.isMobile = true;
+    effectiveDirectory = '/repo';
     sessionCounter = 0;
     mockedActionsState.actions = [{ id: 'build', name: 'Build', command: 'echo hello', icon: 'build' }];
   });
@@ -290,6 +293,7 @@ describe('ProjectActionsButton lifecycle', () => {
   });
 
   test('default action runs in the current worktree and stores its tab there', async () => {
+    effectiveDirectory = '/repo-worktree';
     await renderButton({ projectPath: '/repo', directory: '/repo-worktree' });
 
     const primaryButton = host.querySelector('button');
@@ -306,10 +310,12 @@ describe('ProjectActionsButton lifecycle', () => {
     expect(createCalls[0]?.cwd).toBe('/repo-worktree');
     expect(useTerminalStore.getState().getDirectoryState('/repo-worktree')?.tabs.some((tab) => tab.purpose.type === 'project-action' && tab.purpose.actionId === 'build')).toBe(true);
     expect(useTerminalStore.getState().getDirectoryState('/repo')?.tabs.some((tab) => tab.purpose.type === 'project-action') ?? false).toBe(false);
+    expect(openContextPanelTabCalls).toEqual([{ directory: '/repo-worktree', mode: 'terminal', targetDirectory: null }]);
   });
 
-  test('parent action runs in the parent checkout and stores its tab there', async () => {
+  test('parent action runs in the parent checkout, stores its tab there, and reveals it from the live worktree host', async () => {
     mockedActionsState.actions = [{ id: 'build', name: 'Build', command: 'echo hello', icon: 'build', runIn: 'parent' }];
+    effectiveDirectory = '/repo-worktree';
     await renderButton({ projectPath: '/repo', directory: '/repo-worktree' });
 
     const primaryButton = host.querySelector('button');
@@ -326,6 +332,26 @@ describe('ProjectActionsButton lifecycle', () => {
     expect(createCalls[0]?.cwd).toBe('/repo');
     expect(useTerminalStore.getState().getDirectoryState('/repo')?.tabs.some((tab) => tab.purpose.type === 'project-action' && tab.purpose.actionId === 'build')).toBe(true);
     expect(useTerminalStore.getState().getDirectoryState('/repo-worktree')?.tabs.some((tab) => tab.purpose.type === 'project-action') ?? false).toBe(false);
+    expect(openContextPanelTabCalls).toEqual([{ directory: '/repo-worktree', mode: 'terminal', targetDirectory: '/repo' }]);
+  });
+
+  test('project action reveal uses the live effective host instead of the sticky action context directory', async () => {
+    effectiveDirectory = '/live-host';
+    await renderButton({ projectPath: '/repo', directory: '/repo-worktree' });
+
+    const primaryButton = host.querySelector('button');
+    if (!primaryButton) {
+      throw new Error('expected primary button');
+    }
+
+    await act(async () => {
+      primaryButton.dispatchEvent(new Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(createCalls).toHaveLength(1);
+    expect(createCalls[0]?.cwd).toBe('/repo-worktree');
+    expect(openContextPanelTabCalls).toEqual([{ directory: '/live-host', mode: 'terminal', targetDirectory: '/repo-worktree' }]);
   });
 
   test('auto-discover without a preview hint settles on an announced localhost URL in context preview only', async () => {
@@ -367,7 +393,8 @@ describe('ProjectActionsButton lifecycle', () => {
   test('auto-discover opens its terminal when no preview URL appears before the fallback timeout', async () => {
     mockedDeviceInfo.isMobile = false;
     detectedDevServer.command = 'bun run dev';
-    await renderButton();
+    effectiveDirectory = '/repo-worktree';
+    await renderButton({ projectPath: '/repo', directory: '/repo' });
 
     const primaryButton = host.querySelector('button');
     if (!primaryButton) {
@@ -380,8 +407,9 @@ describe('ProjectActionsButton lifecycle', () => {
     });
 
     expect(openContextPanelTabCalls).toEqual([]);
+    effectiveDirectory = '/switched-after-launch';
     await runWindowTimeouts(15_000);
-    expect(openContextPanelTabCalls).toEqual([{ directory: '/repo', mode: 'terminal' }]);
+    expect(openContextPanelTabCalls).toEqual([{ directory: '/repo-worktree', mode: 'terminal', targetDirectory: '/repo' }]);
   });
 
   test('manual action URL does not open a second output-derived URL', async () => {

@@ -5,6 +5,18 @@ import { Window } from 'happy-dom';
 
 import { useTerminalStore } from '@/stores/useTerminalStore';
 
+let effectiveDirectory = '/repo';
+const openContextPreviewCalls: Array<[string, string]> = [];
+const createSessionCalls: Array<{ cwd: string }> = [];
+const ensureDirectoryCalls: string[] = [];
+const openContextPreview = (directory: string, url: string) => {
+  openContextPreviewCalls.push([directory, url]);
+};
+const createSession = async ({ cwd }: { cwd: string }) => {
+  createSessionCalls.push({ cwd });
+  return { sessionId: 'unused', cols: 80, rows: 24, status: 'running' as const };
+};
+
 const sessionUiState = {
   currentSessionId: 'session-1',
   newSessionDraft: null,
@@ -17,7 +29,7 @@ const uiState = {
   terminalShell: 'zsh',
   terminalLoginShells: ['zsh'],
   showTerminalQuickKeysOnDesktop: false,
-  openContextPreview: () => undefined,
+  openContextPreview,
 };
 
 const useUiStoreMock = Object.assign(
@@ -26,12 +38,12 @@ const useUiStoreMock = Object.assign(
 );
 
 mock.module('@/sync/session-ui-store', () => ({ useSessionUIStore: useSessionUIStoreMock }));
-mock.module('@/hooks/useEffectiveDirectory', () => ({ useEffectiveDirectory: () => '/repo' }));
+mock.module('@/hooks/useEffectiveDirectory', () => ({ useEffectiveDirectory: () => effectiveDirectory }));
 mock.module('@/hooks/useRuntimeAPIs', () => ({
   useRuntimeAPIs: () => ({
     runtime: { platform: 'web' },
     terminal: {
-      createSession: async () => ({ sessionId: 'unused', cols: 80, rows: 24, status: 'running' as const }),
+      createSession,
       sendInput: async () => undefined,
       resize: async () => undefined,
       close: async () => undefined,
@@ -75,7 +87,25 @@ mock.module('@/hooks/useFontPreferences', () => ({ useFontPreferences: () => ({ 
 mock.module('@/lib/device', () => ({ useDeviceInfo: () => ({ isMobile: false, isTablet: false, hasTouchOnlyPointer: false }) }));
 mock.module('@/stores/useUIStore', () => ({ useUIStore: useUiStoreMock }));
 mock.module('@/stores/useInlineCommentDraftStore', () => ({ useInlineCommentDraftStore: () => ({ addDraft: () => undefined }) }));
-mock.module('@/components/terminal/TerminalViewport', () => ({ TerminalViewport: () => null }));
+mock.module('@/components/terminal/TerminalViewport', () => ({
+  TerminalViewport: React.forwardRef(function TerminalViewportMock(
+    { sessionKey, chunks, isVisible }: { sessionKey: string; chunks: unknown[]; isVisible: boolean },
+    ref: React.ForwardedRef<{ focus: () => void; fit: () => void; getSelection: () => null }>,
+  ) {
+    React.useImperativeHandle(ref, () => ({
+      focus: () => undefined,
+      fit: () => undefined,
+      getSelection: () => null,
+    }), []);
+
+    return React.createElement('div', {
+      'data-terminal-viewport': 'true',
+      'data-session-key': sessionKey,
+      'data-visible': String(isVisible),
+      'data-chunk-count': String(chunks.length),
+    });
+  }),
+}));
 mock.module('@/components/icon/Icon', () => ({
   Icon: ({ name, className }: { name: string; className?: string }) => React.createElement('span', { 'data-icon': name, className }),
 }));
@@ -95,12 +125,41 @@ mock.module('@/lib/i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) 
 
 const { TerminalView } = await import('./TerminalView');
 
+const ensureDirectorySpy = (directory: string) => {
+  ensureDirectoryCalls.push(directory);
+  useTerminalStore.setState((state) => {
+    if (state.sessions.get(directory)) return state;
+
+    const tab = {
+      id: `spy-tab-${directory}`,
+      terminalSessionId: null,
+      lifecycle: 'idle' as const,
+      purpose: { type: 'terminal' as const },
+      label: 'Terminal',
+      iconKey: null,
+      isConnecting: false,
+      createdAt: Date.now(),
+      previewUrl: null,
+      previewAutoOpened: false,
+      previewUrlLocked: false,
+    };
+
+    const sessions = new Map(state.sessions);
+    sessions.set(directory, { tabs: [tab], activeTabId: tab.id });
+    return { sessions };
+  });
+};
+
 describe('TerminalView project action tab indicator', () => {
   let windowInstance: Window;
   let host: HTMLDivElement;
   let root: Root;
 
   beforeEach(() => {
+    effectiveDirectory = '/repo';
+    openContextPreviewCalls.length = 0;
+    createSessionCalls.length = 0;
+    ensureDirectoryCalls.length = 0;
     windowInstance = new Window({ url: 'http://localhost/' });
     Object.assign(globalThis, {
       window: windowInstance,
@@ -124,6 +183,7 @@ describe('TerminalView project action tab indicator', () => {
     root = createRoot(host);
 
     useTerminalStore.getState().clearAll();
+    useTerminalStore.setState({ ensureDirectory: ensureDirectorySpy });
     useTerminalStore.getState().ensureDirectory('/repo');
 
     const interactiveTabId = useTerminalStore.getState().getDirectoryState('/repo')!.tabs[0]!.id;
@@ -140,6 +200,7 @@ describe('TerminalView project action tab indicator', () => {
     useTerminalStore.getState().setTabIconKey('/repo', exitedActionTabId, 'play');
     useTerminalStore.getState().setTabPurpose('/repo', exitedActionTabId, { type: 'project-action', actionId: 'deploy', executionId: 'exec-exited' });
     useTerminalStore.getState().setTabLifecycle('/repo', exitedActionTabId, 'exited');
+    ensureDirectoryCalls.length = 0;
   });
 
   afterEach(async () => {
@@ -166,5 +227,90 @@ describe('TerminalView project action tab indicator', () => {
     expect(runningActionTab?.querySelector('[data-icon]')?.className).toContain('text-muted-foreground');
     expect(exitedActionTab?.querySelector('[data-icon]')?.getAttribute('data-icon')).toBe('play');
     expect(host.querySelectorAll('[data-icon="loader-4"]').length).toBe(1);
+  });
+
+  test('uses the explicit terminal directory for terminal tabs and session creation while preview ownership stays on the host directory', async () => {
+    effectiveDirectory = '/repo-worktree';
+    useTerminalStore.getState().ensureDirectory('/repo-worktree');
+    const worktreeTabId = useTerminalStore.getState().getDirectoryState('/repo-worktree')!.tabs[0]!.id;
+    useTerminalStore.getState().setTabLabel('/repo-worktree', worktreeTabId, 'Worktree Terminal');
+
+    const repoTabId = useTerminalStore.getState().getDirectoryState('/repo')!.tabs[0]!.id;
+    useTerminalStore.getState().setTabLabel('/repo', repoTabId, 'Repo Terminal');
+    useTerminalStore.getState().setTabPreviewUrl('/repo', repoTabId, 'https://preview.example.test');
+
+    await act(async () => {
+      root.render(React.createElement(TerminalView, { visible: true, directory: '/repo' }));
+    });
+
+    const tabLabels = Array.from(host.querySelectorAll('[data-tab-label]')).map((node) => node.textContent);
+    expect(tabLabels).toContain('Repo Terminal');
+    expect(tabLabels).not.toContain('Worktree Terminal');
+    expect(createSessionCalls.length).toBe(1);
+    expect(createSessionCalls[0]?.cwd).toBe('/repo');
+
+    const previewButton = host.querySelector<HTMLElement>('[title="terminalView.preview.openTitle"]');
+    expect(previewButton).not.toBeNull();
+    previewButton?.click();
+    expect(openContextPreviewCalls).toEqual([['/repo-worktree', 'https://preview.example.test']]);
+  });
+
+  test('keeps the existing context-directory behavior when no explicit terminal directory is provided', async () => {
+    effectiveDirectory = '/repo-worktree';
+    useTerminalStore.getState().ensureDirectory('/repo-worktree');
+    const worktreeTabId = useTerminalStore.getState().getDirectoryState('/repo-worktree')!.tabs[0]!.id;
+    useTerminalStore.getState().setTabLabel('/repo-worktree', worktreeTabId, 'Worktree Terminal');
+
+    await act(async () => {
+      root.render(React.createElement(TerminalView, { visible: true }));
+    });
+
+    const tabLabels = Array.from(host.querySelectorAll('[data-tab-label]')).map((node) => node.textContent);
+    expect(tabLabels).toContain('Worktree Terminal');
+    expect(createSessionCalls.length).toBe(1);
+    expect(createSessionCalls[0]?.cwd).toBe('/repo-worktree');
+  });
+
+  test('treats an explicit terminal target with no terminal state as an inert reveal', async () => {
+    effectiveDirectory = '/repo-worktree';
+    useTerminalStore.getState().ensureDirectory('/repo-worktree');
+
+    await act(async () => {
+      root.render(React.createElement(TerminalView, { visible: true, directory: '/missing-repo' }));
+    });
+
+    expect(ensureDirectoryCalls).not.toContain('/missing-repo');
+    expect(createSessionCalls.length).toBe(0);
+    expect(host.querySelector('[data-tabs-strip="terminal"]')).toBeNull();
+    expect(host.querySelector('[data-terminal-viewport="true"]')?.getAttribute('data-chunk-count')).toBe('0');
+  });
+
+  test('includes the terminal directory in the viewport identity key', async () => {
+    effectiveDirectory = '/repo-worktree';
+    useTerminalStore.getState().ensureDirectory('/repo-worktree');
+
+    useTerminalStore.setState((state) => {
+      const repoTab = state.sessions.get('/repo')!.tabs[0]!;
+      const sessions = new Map(state.sessions);
+      sessions.set('/repo-worktree', {
+        tabs: [{ ...repoTab, label: 'Mirrored Terminal' }],
+        activeTabId: repoTab.id,
+      });
+      return { sessions };
+    });
+
+    await act(async () => {
+      root.render(React.createElement(TerminalView, { visible: true }));
+    });
+    const contextKey = host.querySelector('[data-terminal-viewport="true"]')!.getAttribute('data-session-key');
+
+    await act(async () => {
+      root.render(React.createElement(TerminalView, { visible: true, directory: '/repo' }));
+    });
+    const targetKey = host.querySelector('[data-terminal-viewport="true"]')!.getAttribute('data-session-key');
+
+    expect(contextKey).not.toBe(targetKey);
+    expect(contextKey).toContain('/repo-worktree');
+    expect(targetKey).toContain('/repo');
   });
 });

@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { CONTEXT_SURFACES, sortContextSurfaces } from '../lib/surfaces/registry';
 import { useUIStore } from './useUIStore';
 
+const getContextPanelTabs = (directory: string) => useUIStore.getState().contextPanelByDirectory[directory]?.tabs ?? [];
+
+const getTerminalTab = (directory: string) => getContextPanelTabs(directory).find((tab) => tab.mode === 'terminal');
+
 beforeEach(() => {
   useUIStore.setState({ contextPanelByDirectory: {}, contextRailOrder: [] });
 });
@@ -205,6 +209,168 @@ describe('useUIStore context panel tabs', () => {
     const tabs = useUIStore.getState().contextPanelByDirectory[directory]?.tabs ?? [];
     expect(tabs.some((tab) => tab.mode === 'plan')).toBe(false);
   });
+
+  test('stores a terminal target under the host directory without creating a target root', () => {
+    useUIStore.getState().openContextPanelTab('/repo-worktree', {
+      mode: 'terminal',
+      targetDirectory: '/repo',
+    });
+
+    const worktreeState = useUIStore.getState().contextPanelByDirectory['/repo-worktree'];
+    const terminalTab = getTerminalTab('/repo-worktree');
+
+    expect(worktreeState?.activeTabId).toBe('terminal');
+    expect(worktreeState?.tabs).toHaveLength(1);
+    expect(terminalTab?.targetDirectory).toBe('/repo');
+    expect(useUIStore.getState().contextPanelByDirectory['/repo']).toBe(undefined);
+  });
+
+  test('normalizes terminal targets and canonicalizes same-host targets to null', () => {
+    useUIStore.getState().openContextPanelTab('/repo-worktree//', {
+      mode: 'terminal',
+      targetDirectory: ' \\repo\\nested\\ ',
+    });
+
+    let terminalTab = getTerminalTab('/repo-worktree');
+    expect(terminalTab?.targetDirectory).toBe('/repo/nested');
+
+    useUIStore.getState().openContextPanelTab('/repo-worktree//', {
+      mode: 'terminal',
+      targetDirectory: '/repo-worktree',
+    });
+
+    terminalTab = getTerminalTab('/repo-worktree');
+    expect(terminalTab?.targetDirectory).toBe(null);
+  });
+
+  test('reopening a terminal tab with null clears a previous target directory', () => {
+    useUIStore.getState().openContextPanelTab('/repo-worktree', {
+      mode: 'terminal',
+      targetDirectory: '/repo',
+    });
+    useUIStore.getState().openContextPanelTab('/repo-worktree', {
+      mode: 'terminal',
+      targetDirectory: null,
+    });
+
+    const terminalTab = getTerminalTab('/repo-worktree');
+    expect(terminalTab?.targetDirectory).toBe(null);
+  });
+
+  test('legacy terminal tabs without a target directory sanitize to null on touch', () => {
+    // SAFETY: the object mirrors the persisted context-panel shape exactly;
+    // setState bypasses the persist middleware's typing, not its migration.
+    useUIStore.setState({
+      contextPanelByDirectory: {
+        '/repo-worktree': {
+          isOpen: true,
+          expanded: false,
+          widthByMode: {},
+          touchedAt: 1,
+          activeTabId: 'terminal',
+          tabs: [
+            {
+              id: 'terminal',
+              mode: 'terminal',
+              targetPath: null,
+              dedupeKey: 'terminal',
+              label: null,
+              sessionTitleFallback: null,
+              readOnly: false,
+              stagedDiff: false,
+              diffScope: null,
+              touchedAt: 1,
+            },
+          ],
+        },
+      },
+    } as never);
+
+    useUIStore.getState().openContextPanelTab('/repo-worktree', { mode: 'diff' });
+
+    const terminalTab = getTerminalTab('/repo-worktree');
+    expect(terminalTab?.targetDirectory).toBe(null);
+  });
+
+  test('persisted terminal tabs keep a normalized target through a rehydration-like touch', () => {
+    // SAFETY: the object mirrors the persisted context-panel shape exactly;
+    // setState bypasses the persist middleware's typing, not its migration.
+    useUIStore.setState({
+      contextPanelByDirectory: {
+        '/repo-worktree': {
+          isOpen: true,
+          expanded: false,
+          widthByMode: {},
+          touchedAt: 1,
+          activeTabId: 'terminal',
+          tabs: [
+            {
+              id: 'terminal',
+              mode: 'terminal',
+              targetPath: null,
+              targetDirectory: ' \\repo\\nested\\ ',
+              dedupeKey: 'terminal',
+              label: null,
+              sessionTitleFallback: null,
+              readOnly: false,
+              stagedDiff: false,
+              diffScope: null,
+              touchedAt: 1,
+            },
+          ],
+        },
+      },
+    } as never);
+
+    useUIStore.getState().openContextPanelTab('/repo-worktree', { mode: 'diff' });
+
+    const terminalTab = getTerminalTab('/repo-worktree');
+    expect(terminalTab?.targetDirectory).toBe('/repo/nested');
+  });
+
+  test('ignores targetDirectory on non-terminal descriptors and sanitized tabs', () => {
+    useUIStore.getState().openContextPanelTab('/repo-worktree', {
+      mode: 'diff',
+      targetDirectory: '/repo',
+    });
+
+    const diffTab = getContextPanelTabs('/repo-worktree').find((tab) => tab.mode === 'diff');
+    expect(diffTab?.targetDirectory).toBe(null);
+
+    // SAFETY: the object mirrors the persisted context-panel shape exactly;
+    // setState bypasses the persist middleware's typing, not its migration.
+    useUIStore.setState({
+      contextPanelByDirectory: {
+        '/repo-worktree': {
+          isOpen: true,
+          expanded: false,
+          widthByMode: {},
+          touchedAt: 1,
+          activeTabId: 'diff',
+          tabs: [
+            {
+              id: 'diff',
+              mode: 'diff',
+              targetPath: '/repo/file.ts',
+              targetDirectory: '/stale',
+              dedupeKey: 'diff',
+              label: null,
+              sessionTitleFallback: null,
+              readOnly: false,
+              stagedDiff: false,
+              diffScope: 'working',
+              touchedAt: 1,
+            },
+          ],
+        },
+      },
+    } as never);
+
+    useUIStore.getState().openContextPanelTab('/repo-worktree', { mode: 'terminal' });
+
+    const sanitizedDiffTab = getContextPanelTabs('/repo-worktree').find((tab) => tab.mode === 'diff');
+    expect(sanitizedDiffTab?.targetDirectory).toBe(null);
+  });
 });
 
 describe('useUIStore openContextSurface', () => {
@@ -271,6 +437,34 @@ describe('useUIStore openContextSurface', () => {
     const activeTab = state?.tabs.find((tab) => tab.id === state.activeTabId);
     expect(activeTab?.mode).toBe('file');
     expect(activeTab?.targetPath).toBe('/repo/b.ts');
+  });
+
+  test('opening the terminal surface clears a stale target on the singleton tab', () => {
+    useUIStore.getState().openContextPanelTab(directory, {
+      mode: 'terminal',
+      targetDirectory: '/repo-target',
+    });
+
+    useUIStore.getState().openContextSurface(directory, 'terminal');
+
+    const terminalTab = getTerminalTab(directory);
+    expect(terminalTab?.targetDirectory).toBe(null);
+  });
+
+  test('opening the terminal surface activates the existing tab and clears its stale target', () => {
+    useUIStore.getState().openContextPanelTab(directory, {
+      mode: 'terminal',
+      targetDirectory: '/repo-target',
+    });
+    useUIStore.getState().openContextPanelTab(directory, { mode: 'diff' });
+
+    useUIStore.getState().openContextSurface(directory, 'terminal');
+
+    const state = useUIStore.getState().contextPanelByDirectory[directory];
+    const terminalTab = getTerminalTab(directory);
+    expect(state?.activeTabId).toBe('terminal');
+    expect(state?.isOpen).toBe(true);
+    expect(terminalTab?.targetDirectory).toBe(null);
   });
 });
 
