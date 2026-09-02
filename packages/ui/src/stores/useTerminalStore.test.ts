@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 
 import type { TerminalServerSession } from '@/lib/api/types';
 
-import { useTerminalStore } from './useTerminalStore';
+import { directoryMayHaveActiveProjectAction, useTerminalStore } from './useTerminalStore';
 
 const setup = () => {
   useTerminalStore.getState().clearAll();
@@ -122,6 +122,123 @@ describe('terminal state reconciliation', () => {
     expect(tab.purpose).toEqual({ type: 'project-action', actionId: 'build', executionId: 'exec-2' });
   });
 
+  test('activates a rebound running project-action tab when the current active tab is idle and sessionless', () => {
+    const actionTabId = setup();
+    const shellTabId = useTerminalStore.getState().createTab('/repo');
+    useTerminalStore.getState().setTabPurpose('/repo', actionTabId, { type: 'project-action', actionId: 'build', executionId: null });
+    useTerminalStore.getState().setActiveTab('/repo', shellTabId);
+
+    useTerminalStore.getState().reconcileServerSessions('/repo', [{
+      sessionId: 'srv-build',
+      cwd: '/repo',
+      status: 'running',
+      createdAt: 10,
+      mode: 'command',
+      purpose: { type: 'project-action', actionId: 'build', executionId: 'exec-1' },
+    }]);
+
+    const state = useTerminalStore.getState().getDirectoryState('/repo')!;
+    expect(state.activeTabId).toBe(actionTabId);
+  });
+
+  test('does not activate a rebound running project-action tab when the current active tab is a live running terminal', () => {
+    const actionTabId = setup();
+    const shellTabId = useTerminalStore.getState().createTab('/repo');
+    useTerminalStore.getState().setTabPurpose('/repo', actionTabId, { type: 'project-action', actionId: 'build', executionId: null });
+    useTerminalStore.getState().setTabSessionId('/repo', shellTabId, 'srv-shell');
+    useTerminalStore.getState().setActiveTab('/repo', shellTabId);
+
+    useTerminalStore.getState().reconcileServerSessions('/repo', [{
+      sessionId: 'srv-build',
+      cwd: '/repo',
+      status: 'running',
+      createdAt: 10,
+      mode: 'command',
+      purpose: { type: 'project-action', actionId: 'build', executionId: 'exec-1' },
+    }]);
+
+    const state = useTerminalStore.getState().getDirectoryState('/repo')!;
+    expect(state.activeTabId).toBe(shellTabId);
+  });
+
+  test('does not activate an exited adopted project-action tab', () => {
+    const actionTabId = setup();
+    const shellTabId = useTerminalStore.getState().createTab('/repo');
+    useTerminalStore.getState().setTabPurpose('/repo', actionTabId, { type: 'project-action', actionId: 'build', executionId: null });
+    useTerminalStore.getState().setActiveTab('/repo', shellTabId);
+
+    useTerminalStore.getState().reconcileServerSessions('/repo', [{
+      sessionId: 'srv-build',
+      cwd: '/repo',
+      status: 'exited',
+      createdAt: 10,
+      mode: 'command',
+      purpose: { type: 'project-action', actionId: 'build', executionId: 'exec-1' },
+    }]);
+
+    const state = useTerminalStore.getState().getDirectoryState('/repo')!;
+    expect(state.activeTabId).toBe(shellTabId);
+  });
+
+  test('activates the newest adopted running project action when multiple qualify in one reconciliation', () => {
+    const firstActionTabId = setup();
+    const secondActionTabId = useTerminalStore.getState().createTab('/repo');
+    const shellTabId = useTerminalStore.getState().createTab('/repo');
+    useTerminalStore.getState().setTabPurpose('/repo', firstActionTabId, { type: 'project-action', actionId: 'build', executionId: null });
+    useTerminalStore.getState().setTabPurpose('/repo', secondActionTabId, { type: 'project-action', actionId: 'test', executionId: null });
+    useTerminalStore.getState().setActiveTab('/repo', shellTabId);
+
+    useTerminalStore.getState().reconcileServerSessions('/repo', [
+      {
+        sessionId: 'srv-build',
+        cwd: '/repo',
+        status: 'running',
+        createdAt: 10,
+        mode: 'command',
+        purpose: { type: 'project-action', actionId: 'build', executionId: 'exec-1' },
+      },
+      {
+        sessionId: 'srv-test',
+        cwd: '/repo',
+        status: 'running',
+        createdAt: 20,
+        mode: 'command',
+        purpose: { type: 'project-action', actionId: 'test', executionId: 'exec-2' },
+      },
+    ]);
+
+    const state = useTerminalStore.getState().getDirectoryState('/repo')!;
+    expect(state.activeTabId).toBe(secondActionTabId);
+  });
+
+  // Activation transitions always rewrite the affected tab (session id or
+  // lifecycle changes), so there is no reachable activation without a tab
+  // update; this pins the in-place rebind case where only one tab mutates
+  // and no tab is added, removed, or reordered.
+  test('activates an in-place running rebind of an existing action tab without structural tab changes', () => {
+    const actionTabId = setup();
+    const shellTabId = useTerminalStore.getState().createTab('/repo');
+    useTerminalStore.getState().setTabPurpose('/repo', actionTabId, { type: 'project-action', actionId: 'build', executionId: 'exec-1' });
+    useTerminalStore.getState().setTabSessionId('/repo', actionTabId, 'srv-build', { expectedExecutionId: 'exec-1' });
+    useTerminalStore.getState().setActiveTab('/repo', shellTabId);
+    useTerminalStore.getState().setTabLifecycle('/repo', actionTabId, 'idle', { expectedExecutionId: 'exec-1' });
+
+    const beforeTabs = useTerminalStore.getState().getDirectoryState('/repo')!.tabs;
+
+    useTerminalStore.getState().reconcileServerSessions('/repo', [{
+      sessionId: 'srv-build',
+      cwd: '/repo',
+      status: 'running',
+      createdAt: beforeTabs[0]!.createdAt,
+      mode: 'command',
+      purpose: { type: 'project-action', actionId: 'build', executionId: 'exec-1' },
+    }]);
+
+    const state = useTerminalStore.getState().getDirectoryState('/repo')!;
+    expect(state.tabs).not.toBe(beforeTabs);
+    expect(state.activeTabId).toBe(actionTabId);
+  });
+
   test('gives unknown adopted action sessions a generic fallback label and icon', () => {
     setup();
     useTerminalStore.getState().reconcileServerSessions('/repo', [{
@@ -148,6 +265,23 @@ describe('terminal state reconciliation', () => {
     expect(tab.lifecycle).toBe('exited');
     expect(tab.purpose).toEqual({ type: 'project-action', actionId: 'build', executionId: null });
     expect(useTerminalStore.getState().getDirectoryState('/other')).toBe(otherBefore);
+  });
+
+  test('normalizes executionId to null when adopting an exited project-action session', () => {
+    const tabId = setup();
+    useTerminalStore.getState().setTabPurpose('/repo', tabId, { type: 'project-action', actionId: 'build', executionId: null });
+
+    useTerminalStore.getState().reconcileServerSessions('/repo', [{
+      sessionId: 'srv-build',
+      cwd: '/repo',
+      status: 'exited',
+      createdAt: 10,
+      mode: 'command',
+      purpose: { type: 'project-action', actionId: 'build', executionId: 'exec-server' },
+    }]);
+
+    const tab = useTerminalStore.getState().getDirectoryState('/repo')!.tabs[0]!;
+    expect(tab.purpose).toEqual({ type: 'project-action', actionId: 'build', executionId: null });
   });
 
   test('an old empty snapshot preserves a newer starting action execution', () => {
@@ -396,5 +530,29 @@ describe('default terminal tab labels', () => {
     useTerminalStore.getState().createTab('/repo');
 
     expect(labels()).toEqual(['build', 'Terminal']);
+  });
+});
+
+describe('directoryMayHaveActiveProjectAction', () => {
+  test('returns true for any non-exited project-action tab', () => {
+    expect(directoryMayHaveActiveProjectAction({
+      activeTabId: 'tab-1',
+      tabs: [
+        {
+          id: 'tab-1',
+          terminalSessionId: null,
+          lifecycle: 'idle',
+          purpose: { type: 'project-action', actionId: 'build', executionId: null },
+          label: 'Build',
+          iconKey: 'play',
+          isConnecting: false,
+          createdAt: 1,
+          previewUrl: null,
+          previewAutoOpened: false,
+          previewUrlLocked: false,
+        },
+      ],
+    })).toBe(true);
+    expect(directoryMayHaveActiveProjectAction(undefined)).toBe(false);
   });
 });

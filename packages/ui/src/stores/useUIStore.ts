@@ -9,6 +9,7 @@ import { DEFAULT_MONO_FONT, DEFAULT_UI_FONT, type MonoFontOption, type UiFontOpt
 import { getStoredMobileKeyboardMode, type MobileKeyboardMode } from '@/lib/mobileKeyboardMode';
 import type { LinearIssueListAssignee, LinearIssueListPriority, LinearIssueListStatus, TerminalShell } from '@/lib/api/types';
 import type { ProjectRef } from '@/lib/projectContextApi';
+import { directoryMayHaveActiveProjectAction, useTerminalStore } from '@/stores/useTerminalStore';
 import { useFilesViewTabsStore } from './useFilesViewTabsStore';
 import { isWindowsArm64 } from '@/lib/platform';
 import { isVSCodeRuntime } from '@/lib/desktop';
@@ -1397,6 +1398,14 @@ export const useUIStore = create<UIStore>()(
           const activeTab = tabs.find((tab) => tab.id === panelState?.activeTabId) ?? null;
           const clearTerminalTarget = () => {
             if (mode === 'terminal') {
+              const terminalTab = tabs.find((tab) => tab.mode === 'terminal') ?? null;
+              const targetDirectory = terminalTab?.targetDirectory ?? null;
+              if (targetDirectory) {
+                const targetState = useTerminalStore.getState().getDirectoryState(targetDirectory);
+                if (directoryMayHaveActiveProjectAction(targetState)) {
+                  return;
+                }
+              }
               state.openContextPanelTab(normalizedDirectory, { mode: 'terminal', targetDirectory: null }, { reveal: false });
             }
           };

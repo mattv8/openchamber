@@ -32,6 +32,12 @@ export const EMPTY_TERMINAL_BUFFER: TerminalBuffer = Object.freeze({
 
 export type TerminalTabLifecycle = 'idle' | 'starting' | 'running' | 'stopping' | 'exited';
 
+export const ACTIVE_PROJECT_ACTION_LIFECYCLES: ReadonlySet<TerminalTabLifecycle> = new Set([
+  'starting',
+  'running',
+  'stopping',
+]);
+
 export type TerminalTabPurpose =
   | { type: 'terminal' }
   | { type: 'project-action'; actionId: string; executionId: string | null };
@@ -54,6 +60,9 @@ export type DirectoryTerminalState = {
   tabs: TerminalTab[];
   activeTabId: string | null;
 };
+
+export const directoryMayHaveActiveProjectAction = (state: DirectoryTerminalState | undefined): boolean =>
+  Boolean(state?.tabs.some((tab) => isProjectActionPurpose(tab.purpose) && tab.lifecycle !== 'exited'));
 
 type TerminalActionMutationRevisions = ReadonlyMap<string, number>;
 
@@ -177,6 +186,15 @@ const createExecutionId = (): string => createTerminalTabId().replace(/^tab-/, '
 const toActionLifecycle = (status: TerminalServerSession['status']): TerminalTabLifecycle =>
   status === 'running' ? 'running' : 'exited';
 
+const toActionPurposeFromSession = (
+  purpose: Extract<TerminalServerSession['purpose'], { type: 'project-action' }>,
+  status: TerminalServerSession['status'],
+): Extract<TerminalTabPurpose, { type: 'project-action' }> => ({
+  type: 'project-action',
+  actionId: purpose.actionId,
+  executionId: status === 'running' ? purpose.executionId : null,
+});
+
 const toAdoptedActionLabel = (actionId: string): string => {
   const trimmed = actionId.trim();
   return trimmed || 'Action';
@@ -243,6 +261,9 @@ const nextDefaultTabLabel = (tabs: readonly TerminalTab[]): string => {
   }
   return highest === 0 ? 'Terminal' : `Terminal ${highest + 1}`;
 };
+
+const isLiveRunningTerminal = (tab: TerminalTab | undefined): boolean =>
+  Boolean(tab && tab.terminalSessionId !== null && tab.lifecycle === 'running');
 
 const createEmptyTab = (id: string, label: string): TerminalTab => ({
   id,
@@ -432,6 +453,7 @@ export const useTerminalStore = create<TerminalStore>()(
             }
             const tabs = [...(existing?.tabs ?? [])];
             let tabsChanged = false;
+            let activationCandidate: { tabId: string; createdAt: number; index: number } | null = null;
             const listedActionIds = new Set<string>();
             const matchedTabIds = new Set<string>();
             const placeholder = tabs.length === 1
@@ -465,7 +487,7 @@ export const useTerminalStore = create<TerminalStore>()(
               }
 
               const nextPurpose: TerminalTabPurpose = sessionPurpose?.type === 'project-action'
-                ? { type: 'project-action', actionId: sessionPurpose.actionId, executionId: sessionPurpose.executionId }
+                ? toActionPurposeFromSession(sessionPurpose, session.status)
                 : { type: 'terminal' };
 
               if (matchIndex >= 0) {
@@ -474,6 +496,9 @@ export const useTerminalStore = create<TerminalStore>()(
                   ? toActionLifecycle(session.status)
                   : session.status;
                 const nextCreatedAt = session.createdAt ?? current.createdAt;
+                const activatesRunningAction = sessionPurpose?.type === 'project-action'
+                  && session.status === 'running'
+                  && (current.terminalSessionId !== session.sessionId || current.lifecycle !== 'running');
                 const purposeChanged = current.purpose.type !== nextPurpose.type
                   || (current.purpose.type === 'project-action' && nextPurpose.type === 'project-action'
                     && (current.purpose.actionId !== nextPurpose.actionId || current.purpose.executionId !== nextPurpose.executionId));
@@ -494,6 +519,16 @@ export const useTerminalStore = create<TerminalStore>()(
                   };
                   tabsChanged = true;
                 }
+                if (activatesRunningAction) {
+                  const candidate = { tabId: current.id, createdAt: nextCreatedAt, index: matchIndex };
+                  if (
+                    !activationCandidate
+                    || candidate.createdAt > activationCandidate.createdAt
+                    || (candidate.createdAt === activationCandidate.createdAt && candidate.index > activationCandidate.index)
+                  ) {
+                    activationCandidate = candidate;
+                  }
+                }
                 matchedTabIds.add(current.id);
                 continue;
               }
@@ -512,6 +547,16 @@ export const useTerminalStore = create<TerminalStore>()(
               };
               tabs.push(tab);
               tabsChanged = true;
+              if (sessionPurpose?.type === 'project-action' && session.status === 'running') {
+                const candidate = { tabId: tab.id, createdAt: tab.createdAt, index: tabs.length - 1 };
+                if (
+                  !activationCandidate
+                  || candidate.createdAt > activationCandidate.createdAt
+                  || (candidate.createdAt === activationCandidate.createdAt && candidate.index > activationCandidate.index)
+                ) {
+                  activationCandidate = candidate;
+                }
+              }
               matchedTabIds.add(tab.id);
             }
 
@@ -535,14 +580,30 @@ export const useTerminalStore = create<TerminalStore>()(
               };
             });
 
-            if (!changed && existing && reconciledTabs.length === existing.tabs.length && reconciledTabs.every((tab, index) => tab === existing.tabs[index])) {
-              return state;
-            }
-
             const previousActive = existing?.activeTabId ?? null;
-            const activeTabId = previousActive && reconciledTabs.some((tab) => tab.id === previousActive)
+            const resolvedActiveTabId = previousActive && reconciledTabs.some((tab) => tab.id === previousActive)
               ? previousActive
               : reconciledTabs[0]?.id ?? null;
+            const resolvedActiveTab = resolvedActiveTabId
+              ? reconciledTabs.find((tab) => tab.id === resolvedActiveTabId)
+              : reconciledTabs[0];
+            const activeTabId = activationCandidate && !isLiveRunningTerminal(resolvedActiveTab)
+              ? activationCandidate.tabId
+              : resolvedActiveTabId;
+
+            // Activation transitions always rewrite the adopted tab, so today
+            // `changed` is true whenever `activeTabId` moved; the explicit
+            // activeTabId comparison keeps this guard honest if a future
+            // activation path stops touching the tabs array.
+            if (
+              !changed
+              && existing
+              && activeTabId === existing.activeTabId
+              && reconciledTabs.length === existing.tabs.length
+              && reconciledTabs.every((tab, index) => tab === existing.tabs[index])
+            ) {
+              return state;
+            }
 
             const newSessions = new Map(state.sessions);
             newSessions.set(key, { tabs: reconciledTabs, activeTabId });

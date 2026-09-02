@@ -322,6 +322,42 @@ export const ProjectActionsButton = ({
     });
   }, [executionKey]);
 
+  const closeTrackedSubscription = React.useCallback((executionStateKey: string) => {
+    streamCleanupByRunKeyRef.current[executionStateKey]?.();
+    delete streamCleanupByRunKeyRef.current[executionStateKey];
+  }, []);
+
+  const clearTrackedPreviewTimeout = React.useCallback((executionStateKey: string) => {
+    window.clearTimeout(previewWaitTimeoutByRunKeyRef.current[executionStateKey]);
+    delete previewWaitTimeoutByRunKeyRef.current[executionStateKey];
+  }, []);
+
+  React.useEffect(() => {
+    // The refs hold mutable maps whose identity never changes; reading the
+    // container once inside the effect keeps the latest entries visible to
+    // the unmount cleanup without re-reading `.current` there.
+    const trackedStreams = streamCleanupByRunKeyRef.current;
+    const trackedTimeouts = previewWaitTimeoutByRunKeyRef.current;
+    return () => {
+      for (const executionStateKey of Object.keys(trackedStreams)) {
+        closeTrackedSubscription(executionStateKey);
+      }
+      for (const executionStateKey of Object.keys(trackedTimeouts)) {
+        clearTrackedPreviewTimeout(executionStateKey);
+      }
+    };
+  }, [clearTrackedPreviewTimeout, closeTrackedSubscription]);
+
+  React.useEffect(() => {
+    const watchedDirectories = new Set(watchedTerminalDirectories);
+    for (const executionStateKey of Object.keys(streamCleanupByRunKeyRef.current)) {
+      const executionDirectory = executionStateKey.split('::', 1)[0] ?? '';
+      if (!watchedDirectories.has(executionDirectory)) {
+        closeTrackedSubscription(executionStateKey);
+      }
+    }
+  }, [closeTrackedSubscription, watchedTerminalDirectories]);
+
   const revealProjectActionTerminal = React.useCallback((hostDirectory: string, executionDirectory: string) => {
     useUIStore.getState().openContextPanelTab(hostDirectory, {
       mode: 'terminal',

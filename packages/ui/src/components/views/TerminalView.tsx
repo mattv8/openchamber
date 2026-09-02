@@ -1,7 +1,7 @@
 import React from 'react';
 
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { EMPTY_TERMINAL_BUFFER, useTerminalStore } from '@/stores/useTerminalStore';
+import { ACTIVE_PROJECT_ACTION_LIFECYCLES, EMPTY_TERMINAL_BUFFER, useTerminalStore } from '@/stores/useTerminalStore';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { type TerminalStreamEvent } from '@/lib/api/types';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
@@ -31,7 +31,6 @@ type TerminalViewProps = {
 };
 
 const FALLBACK_TERMINAL_SIZE = { cols: 80, rows: 24 } as const;
-const ACTIVE_PROJECT_ACTION_LIFECYCLES = new Set(['starting', 'running', 'stopping']);
 const resolveTabIconName = (iconKey: string | null): IconName => {
     const matchedIcon = PROJECT_ACTION_ICONS.find((entry) => entry.key === iconKey);
     return matchedIcon?.Icon ?? 'terminal';
@@ -224,29 +223,6 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible, directory }
             cancelled = true;
         };
     }, [captureStartedActionMutationRevisions, terminalHydrated, terminalDirectory, terminal, reconcileServerSessions]);
-
-    // The server reaps terminals with no attached socket after an idle timeout,
-    // but only the active tab holds an attachment. While this client is open,
-    // periodically mark every session its tabs reference as active so
-    // background tabs (and other directories' terminals) are not reaped.
-    React.useEffect(() => {
-        if (!terminal.touchSessions) {
-            return;
-        }
-        const touch = () => {
-            if (typeof navigator !== 'undefined' && !navigator.onLine) return;
-            const ids: string[] = [];
-            for (const dirState of useTerminalStore.getState().sessions.values()) {
-                for (const tab of dirState.tabs) {
-                    if (tab.terminalSessionId && tab.lifecycle !== 'exited') ids.push(tab.terminalSessionId);
-                }
-            }
-            if (ids.length > 0) void terminal.touchSessions?.(ids).catch(() => {});
-        };
-        touch();
-        const interval = setInterval(touch, 10 * 60 * 1000);
-        return () => clearInterval(interval);
-    }, [terminal]);
 
     React.useEffect(() => {
         if (!showQuickKeys && activeModifier !== null) {

@@ -3,11 +3,13 @@ import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Window } from 'happy-dom';
 
+import type { TerminalHandlers } from '@/lib/api/types';
 import { useTerminalStore } from '@/stores/useTerminalStore';
 
 let effectiveDirectory = '/repo';
 const openContextPreviewCalls: Array<[string, string]> = [];
 const createSessionCalls: Array<{ cwd: string }> = [];
+const connectCalls: string[] = [];
 const ensureDirectoryCalls: string[] = [];
 const openContextPreview = (directory: string, url: string) => {
   openContextPreviewCalls.push([directory, url]);
@@ -16,6 +18,23 @@ const createSession = async ({ cwd }: { cwd: string }) => {
   createSessionCalls.push({ cwd });
   return { sessionId: 'unused', cols: 80, rows: 24, status: 'running' as const };
 };
+let connectBehavior: (sessionId: string, handlers: TerminalHandlers) => { close: () => void } = () => ({ close: () => undefined });
+const terminalRuntime = {
+  createSession,
+  sendInput: async () => undefined,
+  resize: async () => undefined,
+  close: async () => undefined,
+  updateAppearance: async () => undefined,
+  connect: (sessionId: string, handlers: TerminalHandlers) => {
+    connectCalls.push(sessionId);
+    return connectBehavior(sessionId, handlers);
+  },
+};
+const runtimeApis = {
+  runtime: { platform: 'web' as const },
+  terminal: terminalRuntime,
+};
+const i18n = { t: (key: string) => key };
 
 const sessionUiState = {
   currentSessionId: 'session-1',
@@ -40,17 +59,7 @@ const useUiStoreMock = Object.assign(
 mock.module('@/sync/session-ui-store', () => ({ useSessionUIStore: useSessionUIStoreMock }));
 mock.module('@/hooks/useEffectiveDirectory', () => ({ useEffectiveDirectory: () => effectiveDirectory }));
 mock.module('@/hooks/useRuntimeAPIs', () => ({
-  useRuntimeAPIs: () => ({
-    runtime: { platform: 'web' },
-    terminal: {
-      createSession,
-      sendInput: async () => undefined,
-      resize: async () => undefined,
-      close: async () => undefined,
-      updateAppearance: async () => undefined,
-      connect: () => ({ close: () => undefined }),
-    },
-  }),
+  useRuntimeAPIs: () => runtimeApis,
 }));
 mock.module('@/contexts/useThemeSystem', () => ({
   useThemeSystem: () => ({
@@ -121,7 +130,7 @@ mock.module('@/components/ui/sortable-tabs-strip', () => ({
     )),
   ),
 }));
-mock.module('@/lib/i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }));
+mock.module('@/lib/i18n', () => ({ useI18n: () => i18n }));
 
 const { TerminalView } = await import('./TerminalView');
 
@@ -150,6 +159,16 @@ const ensureDirectorySpy = (directory: string) => {
   });
 };
 
+const flushEffects = async () => {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+};
+
+const bufferEntryKey = (directory: string, tabId: string) => `${directory}\u0000${tabId}`;
+const readBufferContent = (directory: string, tabId: string) => useTerminalStore.getState().getBuffer(directory, tabId).chunks.map((chunk) => chunk.data).join('');
+
 describe('TerminalView project action tab indicator', () => {
   let windowInstance: Window;
   let host: HTMLDivElement;
@@ -159,7 +178,9 @@ describe('TerminalView project action tab indicator', () => {
     effectiveDirectory = '/repo';
     openContextPreviewCalls.length = 0;
     createSessionCalls.length = 0;
+    connectCalls.length = 0;
     ensureDirectoryCalls.length = 0;
+    connectBehavior = () => ({ close: () => undefined });
     windowInstance = new Window({ url: 'http://localhost/' });
     Object.assign(globalThis, {
       window: windowInstance,
@@ -312,5 +333,73 @@ describe('TerminalView project action tab indicator', () => {
     expect(contextKey).not.toBe(targetKey);
     expect(contextKey).toContain('/repo-worktree');
     expect(targetKey).toContain('/repo');
+  });
+
+  test('would fail if revisit attach skipped the active running project-action snapshot restore', async () => {
+    const state = useTerminalStore.getState().getDirectoryState('/repo');
+    const actionTab = state?.tabs.find((tab) => tab.label === 'Build');
+    expect(actionTab).toBeDefined();
+    if (!actionTab) throw new Error('action tab missing');
+
+    useTerminalStore.getState().setTabSessionId('/repo', actionTab.id, 'srv-build', { expectedExecutionId: 'exec-running' });
+    useTerminalStore.getState().setActiveTab('/repo', actionTab.id);
+
+    const snapshotData = 'snapshot history\nfinal line\n';
+    let replaceCount = 0;
+    const unsubscribe = useTerminalStore.subscribe((nextState, previousState) => {
+      const next = nextState.buffers.get(bufferEntryKey('/repo', actionTab.id));
+      const previous = previousState.buffers.get(bufferEntryKey('/repo', actionTab.id));
+      const nextContent = next?.chunks.map((chunk) => chunk.data).join('') ?? '';
+      const previousContent = previous?.chunks.map((chunk) => chunk.data).join('') ?? '';
+      if (nextContent === snapshotData && previousContent !== snapshotData && next?.lastSequence === 7) {
+        replaceCount += 1;
+      }
+    });
+    connectBehavior = (_sessionId, handlers) => {
+      void Promise.resolve().then(() => {
+        handlers.onEvent({ type: 'snapshot', data: snapshotData, sequence: 7, status: 'running' });
+      });
+      return { close: () => undefined };
+    };
+
+    await act(async () => {
+      root.render(React.createElement(TerminalView, { visible: true }));
+    });
+    await flushEffects();
+    unsubscribe();
+
+    expect(connectCalls).toEqual(['srv-build']);
+    expect(createSessionCalls.length).toBe(0);
+    expect(readBufferContent('/repo', actionTab.id)).toBe(snapshotData);
+    expect(useTerminalStore.getState().getBuffer('/repo', actionTab.id).lastSequence).toBe(7);
+    expect(replaceCount).toBe(1);
+  });
+
+  test('would fail if retained parent action targets rendered worktree tabs or attached the wrong session', async () => {
+    effectiveDirectory = '/repo-worktree';
+    useTerminalStore.getState().ensureDirectory('/repo-worktree');
+    const worktreeTabId = useTerminalStore.getState().getDirectoryState('/repo-worktree')!.tabs[0]!.id;
+    useTerminalStore.getState().setTabLabel('/repo-worktree', worktreeTabId, 'Worktree Terminal');
+
+    const repoState = useTerminalStore.getState().getDirectoryState('/repo');
+    const repoActionTab = repoState?.tabs.find((tab) => tab.label === 'Build');
+    expect(repoActionTab).toBeDefined();
+    if (!repoActionTab) throw new Error('repo action tab missing');
+
+    useTerminalStore.getState().setTabLabel('/repo', repoActionTab.id, 'Repo Build');
+    useTerminalStore.getState().setTabSessionId('/repo', repoActionTab.id, 'srv-parent-build', { expectedExecutionId: 'exec-running' });
+    useTerminalStore.getState().setActiveTab('/repo', repoActionTab.id);
+
+    await act(async () => {
+      root.render(React.createElement(TerminalView, { visible: true, directory: '/repo' }));
+    });
+    await flushEffects();
+
+    const tabLabels = Array.from(host.querySelectorAll('[data-tab-label]')).map((node) => node.textContent);
+    expect(tabLabels).toContain('Repo Build');
+    expect(tabLabels).toContain('Interactive');
+    expect(tabLabels).not.toContain('Worktree Terminal');
+    expect(connectCalls).toEqual(['srv-parent-build']);
+    expect(createSessionCalls.length).toBe(0);
   });
 });

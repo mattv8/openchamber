@@ -412,6 +412,59 @@ describe('ProjectActionsButton lifecycle', () => {
     expect(openContextPanelTabCalls).toEqual([{ directory: '/repo-worktree', mode: 'terminal', targetDirectory: '/repo' }]);
   });
 
+  test('unmount closes active subscriptions and cancels pending preview timeouts', async () => {
+    mockedDeviceInfo.isMobile = false;
+    detectedDevServer.command = 'bun run dev';
+    effectiveDirectory = '/repo-worktree';
+    await renderButton({ projectPath: '/repo', directory: '/repo' });
+
+    const primaryButton = host.querySelector('button');
+    if (!primaryButton) {
+      throw new Error('expected primary button');
+    }
+
+    await act(async () => {
+      primaryButton.dispatchEvent(new Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(subscriptions.length).toBeGreaterThan(0);
+    expect(subscriptions.every((entry) => entry.closed === 0)).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+
+    expect(subscriptions.every((entry) => entry.closed === 1)).toBe(true);
+
+    effectiveDirectory = '/switched-after-unmount';
+    await runWindowTimeouts(15_000);
+    expect(openContextPanelTabCalls).toEqual([]);
+  });
+
+  test('stops watching running subscriptions when their execution directory leaves the watched set', async () => {
+    mockedActionsState.actions = [{ id: 'build', name: 'Build', command: 'echo hello', icon: 'build', runIn: 'parent' }];
+    effectiveDirectory = '/repo-worktree';
+    await renderButton({ projectPath: '/repo', directory: '/repo-worktree' });
+
+    const primaryButton = host.querySelector('button');
+    if (!primaryButton) {
+      throw new Error('expected primary button');
+    }
+
+    await act(async () => {
+      primaryButton.dispatchEvent(new Event('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(subscriptions.length).toBeGreaterThan(0);
+    expect(subscriptions.every((entry) => entry.closed === 0)).toBe(true);
+
+    await renderButton({ projectPath: '/other-repo', directory: '/other-repo' });
+
+    expect(subscriptions.every((entry) => entry.closed === 1)).toBe(true);
+  });
+
   test('manual action URL does not open a second output-derived URL', async () => {
     mockedActionsState.actions = [{
       id: 'build',
