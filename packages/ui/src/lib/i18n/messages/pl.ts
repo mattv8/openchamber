@@ -1961,6 +1961,7 @@ export const dict: Record<I18nKey, string> = {
   'diffView.submodule.conflict': 'Konflikt scalania dotyczący zapisanego commita',
   'diffView.state.largeDiff': 'Duży diff ({count} zmienionych linii)',
   'diffView.state.largeDiffDescription': 'Renderowanie może być wolne. Nadal możesz wyświetlić diff przyciskiem poniżej.',
+  'diffView.state.fileUnchangedInScope': 'Ten plik nie ma żadnych zmian w wybranym zakresie.',
   'diffView.state.loadingChanges': 'Ładowanie zmian...',
   'diffView.state.loadingDiff': 'Ładowanie diffu...',
   'diffView.state.loadingRepositoryStatus': 'Ładowanie stanu repozytorium...',
