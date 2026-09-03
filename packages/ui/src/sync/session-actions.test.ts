@@ -1038,6 +1038,47 @@ describe("session restore (unarchive)", () => {
     expect(globalUpsertedSessions).toEqual([])
   })
 
+  test("re-moves a root left stranded in a missing worktree after a partial restore", async () => {
+    const missingWorktreeDirectory = "/projects/main/.worktrees/deleted-branch"
+    const destinationDirectory = "/projects/main"
+    // A previous restore attempt already unarchived the root (server echo made
+    // it active), then the control-plane move failed, leaving it stranded in the
+    // deleted worktree. The retry must still relocate it, not report a false
+    // success because the root is no longer archived.
+    const strandedRoot = {
+      id: "session-root",
+      projectID: "proj_main",
+      directory: missingWorktreeDirectory,
+      project: { worktree: destinationDirectory },
+      time: { created: 1, archived: 0 },
+    } as SessionWithDirectory
+    globalActiveSessions.push(strandedRoot)
+    openCodeProjects.push({ id: "proj_main", worktree: destinationDirectory } as Project)
+    directoryAvailability.set(missingWorktreeDirectory, "missing")
+    sessionUpdateResultsById.set("session-root", { ...strandedRoot, time: { created: 1, updated: 1, archived: 0 } })
+
+    const destination = createStore({})
+    const { unarchiveSession, setActionRefs } = await import("./session-actions")
+    setActionRefs(
+      mockSdk as unknown as OpencodeClient,
+      createChildStores([[destinationDirectory, destination]]),
+      () => missingWorktreeDirectory,
+    )
+
+    expect(await unarchiveSession("session-root")).toBe(true)
+    expect(replyCalls.filter((call) => call.method === "controlPlane.moveSession")).toEqual([
+      {
+        method: "controlPlane.moveSession",
+        params: {
+          sessionID: "session-root",
+          destination: { directory: destinationDirectory },
+          moveChanges: false,
+        },
+      },
+    ])
+    expect(destination.getState().session.map((session) => session.id)).toEqual(["session-root"])
+  })
+
   test("does not move a restored project session that is not a worktree", async () => {
     const projectDirectory = "/projects/main"
     globalArchivedSessions.push({

@@ -1320,9 +1320,11 @@ async function getProjectPrimaryDirectory(projectID?: string): Promise<string | 
   }
 }
 
-async function resolveMissingWorktreeRestoreDirectory(
+type MissingWorktreeRestore = { sourceDirectory: string; destinationDirectory: string }
+
+async function resolveMissingWorktreeRestore(
   session: Session & { project?: { worktree?: string | null } | null },
-): Promise<string | null> {
+): Promise<MissingWorktreeRestore | null> {
   const ownedDirectory = resolveSessionOwnedDirectory(session)
   const projectWorktree = session.project?.worktree?.trim()
   if (!ownedDirectory || !projectWorktree) return null
@@ -1337,10 +1339,10 @@ async function resolveMissingWorktreeRestoreDirectory(
 
   const projectDirectory = await getProjectPrimaryDirectory(session.projectID)
   if (!projectDirectory || projectDirectory === ownedDirectory) return null
-  return projectDirectory
+  return { sourceDirectory: ownedDirectory, destinationDirectory: projectDirectory }
 }
 
-function getRestoreSubtree(rootSession: Session): Array<{ session: Session; sourceDirectory: string }> {
+function getRestoreSubtree(rootSession: Session, sourceDirectory: string): Array<{ session: Session; sourceDirectory: string }> {
   const global = useGlobalSessionsStore.getState()
   const sessionsById = new Map<string, Session>()
 
@@ -1352,11 +1354,15 @@ function getRestoreSubtree(rootSession: Session): Array<{ session: Session; sour
 
   return [...computeSubtreeIds([...sessionsById.values()], rootSession.id)]
     .map((id) => sessionsById.get(id))
-    .filter((session): session is Session => Boolean(session?.time?.archived))
-    .map((session) => {
-      const sourceDirectory = resolveSessionOwnedDirectory(session)
-      return sourceDirectory ? { session, sourceDirectory } : null
-    })
+    .filter((session): session is Session => Boolean(session))
+    .map((session) => ({ session, ownedDirectory: resolveSessionOwnedDirectory(session) }))
+    // Keep a node while it is still archived or still stranded in the
+    // confirmed-missing worktree. The second clause matters on retry: a prior
+    // attempt may have already unarchived the root (server echo made it active)
+    // but failed to move it, so filtering on `archived` alone would drop the
+    // root and report a false success while it stays in the deleted worktree.
+    .filter((entry) => Boolean(entry.session.time?.archived) || entry.ownedDirectory === sourceDirectory)
+    .map((entry) => (entry.ownedDirectory ? { session: entry.session, sourceDirectory: entry.ownedDirectory } : null))
     .filter((entry): entry is { session: Session; sourceDirectory: string } => entry !== null)
 }
 
@@ -1375,13 +1381,13 @@ export async function unarchiveSession(sessionId: string, expectedRuntimeKey = g
   const globalSession = getGlobalSessionSnapshot(sessionId)
   const sessionDirectory = getSessionDirectory(sessionId)
   try {
-    const restoreDirectory = globalSession
-      ? await resolveMissingWorktreeRestoreDirectory(globalSession)
+    const restore = globalSession
+      ? await resolveMissingWorktreeRestore(globalSession)
       : null
     if (isStaleRuntime(expectedRuntimeKey)) return false
 
-    if (globalSession && restoreDirectory) {
-      for (const { session, sourceDirectory } of getRestoreSubtree(globalSession)) {
+    if (globalSession && restore) {
+      for (const { session, sourceDirectory } of getRestoreSubtree(globalSession, restore.sourceDirectory)) {
         const restored = await opencodeClient.updateSession(
           session.id,
           { time: { archived: UNARCHIVED_TIMESTAMP } },
@@ -1394,7 +1400,7 @@ export async function unarchiveSession(sessionId: string, expectedRuntimeKey = g
         if (restored.time?.archived) {
           throw new Error("session.update failed: server kept the session archived")
         }
-        await moveSessionToDirectory(restored, sourceDirectory, restoreDirectory, false, expectedRuntimeKey)
+        await moveSessionToDirectory(restored, sourceDirectory, restore.destinationDirectory, false, expectedRuntimeKey)
         if (isStaleRuntime(expectedRuntimeKey)) return false
       }
       return true
