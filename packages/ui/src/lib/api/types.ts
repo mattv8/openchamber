@@ -23,7 +23,13 @@ export interface TerminalSession {
   cols: number;
   rows: number;
   status: 'running' | 'exited' | 'error';
+  mode?: 'interactive' | 'command';
+  purpose?: TerminalSessionPurpose;
 }
+
+export type TerminalSessionPurpose =
+  | { type: 'terminal' }
+  | { type: 'project-action'; actionId: string; executionId: string };
 
 export type TerminalShell = 'auto' | 'bash' | 'zsh' | 'sh' | 'fish' | 'pwsh' | 'powershell' | 'cmd' | 'dash' | 'ksh' | 'nu';
 
@@ -46,13 +52,15 @@ export interface TerminalStreamEvent {
 
   runtime?: 'node' | 'bun';
   ptyBackend?: string;
+  mode?: 'interactive' | 'command';
+  purpose?: TerminalSessionPurpose;
 }
 
 export interface TerminalError extends Error {
   code?: string;
 }
 
-export interface CreateTerminalOptions {
+interface BaseCreateTerminalOptions {
   cwd: string;
   sessionId?: string;
   cols?: number;
@@ -62,7 +70,20 @@ export interface CreateTerminalOptions {
   terminalForeground?: string;
   shell?: TerminalShell;
   loginShell?: boolean;
+  purpose?: TerminalSessionPurpose;
 }
+
+interface InteractiveCreateTerminalOptions extends BaseCreateTerminalOptions {
+  mode?: 'interactive';
+}
+
+interface CommandCreateTerminalOptions extends BaseCreateTerminalOptions {
+  mode: 'command';
+  command: string;
+}
+
+export type CreateTerminalOptions = InteractiveCreateTerminalOptions | CommandCreateTerminalOptions;
+export type RestartTerminalOptions = InteractiveCreateTerminalOptions;
 
 export interface ResizeTerminalPayload {
   sessionId: string;
@@ -85,6 +106,8 @@ export interface TerminalServerSession {
   cwd: string;
   status: 'running' | 'exited';
   createdAt: number | null;
+  mode?: 'interactive' | 'command';
+  purpose?: TerminalSessionPurpose;
 }
 
 export interface TerminalAPI {
@@ -99,7 +122,7 @@ export interface TerminalAPI {
   resize(payload: ResizeTerminalPayload): Promise<void>;
   updateAppearance?(sessionId: string, appearance: Pick<CreateTerminalOptions, 'themeMode' | 'terminalBackground' | 'terminalForeground'>): Promise<void>;
   close(sessionId: string): Promise<void>;
-  restartSession?(currentSessionId: string, options: CreateTerminalOptions): Promise<TerminalSession>;
+  restartSession?(currentSessionId: string, options: RestartTerminalOptions): Promise<TerminalSession>;
   forceKill?(options: ForceKillOptions): Promise<void>;
 }
 
