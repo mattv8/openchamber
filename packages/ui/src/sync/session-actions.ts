@@ -1453,6 +1453,7 @@ export async function optimisticSend(input: {
   agent?: string
   directory?: string | null
   files?: Array<{ type: "file"; mime: string; url: string; filename: string }>
+  appendSubmissions?: () => void
   onOptimisticInsert?: () => void
   onMessageID?: (messageID: string) => void
   beforeOptimisticInsert?: () => void
@@ -1476,6 +1477,7 @@ export async function optimisticSend(input: {
   await waitForConnectionOrThrow()
   input.beforeOptimisticInsert?.()
   assertRuntimeUnchanged()
+  input.appendSubmissions?.()
 
   const targetDirectory = input.directory ?? dir()
   const store = targetDirectory ? dirStoreForDirectory(targetDirectory) : dirStore()
