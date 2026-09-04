@@ -54,7 +54,13 @@ export function useProjectActionsContext(): ProjectActionsContext | null {
   const worktreesByProject = useSessionUIStore((state) => state.availableWorktreesByProject);
 
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
-  const currentSession = useSession(currentSessionId ?? null);
+  const storeSessionDirectory = useSessionUIStore(
+    React.useCallback(
+      (state) => (currentSessionId ? state.getDirectoryForSession(currentSessionId) : null),
+      [currentSessionId],
+    ),
+  );
+  const currentSession = useSession(currentSessionId ?? null, storeSessionDirectory ?? undefined);
 
   const worktreePath = useSessionUIStore((state) => {
     if (!currentSessionId) return '';
@@ -69,9 +75,13 @@ export function useProjectActionsContext(): ProjectActionsContext | null {
 
   const worktreeDirectory = React.useMemo(() => normalize(worktreePath || ''), [worktreePath]);
   const sessionDirectory = React.useMemo(() => {
-    const raw = typeof currentSession?.directory === 'string' ? currentSession.directory : '';
-    return normalize(raw || '');
-  }, [currentSession?.directory]);
+    // Live child-store lookup misses selections from surfaces with no directory
+    // hint, like the sidebar Recent section. getDirectoryForSession() is the
+    // canonical resolver every consumer must use, and it falls back to the
+    // global sessions store until the live record is present.
+    const live = currentSession?.directory ?? '';
+    return normalize(live || storeSessionDirectory || '');
+  }, [currentSession?.directory, storeSessionDirectory]);
 
   const openDirectory = worktreeDirectory || sessionDirectory || draftDirectory;
   const ownerProject = React.useMemo(() => resolveProjectActionsOwner({
