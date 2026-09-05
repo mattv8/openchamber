@@ -4,6 +4,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'sessions.sidebar.projectAction.active': 'Trwa wykonywanie akcji projektu',
   ...settingsDict,
   ...linearIssuePickerI18n.pl,
   ...linearPanelI18n.pl,
@@ -1847,7 +1848,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.autoReview.reviewSessionLabel': 'Sesja review',
   'chat.autoReview.actions.open': 'Otwórz',
   'chat.autoReview.actions.stop': 'Zatrzymaj',
-  'chat.draftDirtyNotice.tooltip': 'Ta gałąź ma niezacommitowane pliki.\nNowa sesja będzie je widzieć. Commit albo worktree trzyma je osobno.',
+  'chat.draftDirtyNotice.tooltip': 'Masz niezacommitowane zmiany w tej gałęzi.\nNowa sesja może z nimi kolidować. Być może warto najpierw je zacommitować albo użyć innego worktree.',
   'chat.draftDirtyNotice.indicatorAria': 'Niezacommitowane zmiany w tym katalogu',
   'diffView.hunk.label': 'Fragmenty',
   'diffView.hunk.stage': 'Przygotuj',
