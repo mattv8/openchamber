@@ -102,7 +102,6 @@ import {
   setImperativeSessionMessageLoader,
   type SessionMessageLoadState,
 } from "./session-message-loader"
-import { sessionEvents } from "@/lib/sessionEvents"
 
 // ---------------------------------------------------------------------------
 // Context
