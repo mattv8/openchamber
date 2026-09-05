@@ -727,6 +727,8 @@ export interface SettingsPayload {
   inputHistoryLimit?: number;
   gitmojiEnabled?: boolean;
   inputSpellcheckEnabled?: boolean;
+  enterToSend?: boolean;
+  enterToSendConfigured?: boolean;
   showOpenCodeUpdateNotifications?: boolean;
   openCodeUpdateToastDismissedVersion?: string;
   showToolFileIcons?: boolean;
