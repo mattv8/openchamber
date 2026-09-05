@@ -103,11 +103,12 @@ const getDurableStorage = (): Storage | null => {
 
 const readPersistedValue = (): string | null => {
   const storage = getDurableStorage();
-  if (!storage) return inMemoryStorageValue;
+  const fallback = pendingWrite ? JSON.stringify(toEnvelope(pendingWrite.base)) : inMemoryStorageValue;
+  if (!storage) return fallback;
   try {
-    return storage.getItem(STORAGE_KEY) ?? inMemoryStorageValue;
+    return storage.getItem(STORAGE_KEY) ?? (pendingWrite ? null : inMemoryStorageValue);
   } catch {
-    return inMemoryStorageValue;
+    return fallback;
   }
 };
 
@@ -172,7 +173,7 @@ const parseNamespaces = (
   return Object.fromEntries(parsedEntries);
 };
 
-const readSnapshot = (): InputHistorySnapshot => {
+const readDurableSnapshot = (): InputHistorySnapshot => {
   const raw = readPersistedValue();
   if (raw === null) return createEmptySnapshot();
   try {
@@ -205,6 +206,57 @@ const readSnapshot = (): InputHistorySnapshot => {
     inMemoryStorageValue = null;
     return createEmptySnapshot();
   }
+};
+
+// Failed writes remain local authority, but unrelated writes from another tab
+// still participate in the next mutation. Keep bounded snapshots, not a retry log.
+let pendingWrite: { base: InputHistorySnapshot; value: InputHistorySnapshot } | null = null;
+let lastDurableSnapshot = createEmptySnapshot();
+
+const reconcilePendingBuckets = (
+  durable: InputHistorySnapshot['sessionBuckets'],
+  base: InputHistorySnapshot['sessionBuckets'],
+  local: InputHistorySnapshot['sessionBuckets'],
+): InputHistorySnapshot['sessionBuckets'] => {
+  const result = { ...durable };
+  for (const key of new Set([...Object.keys(base), ...Object.keys(local)])) {
+    if (JSON.stringify(base[key]) === JSON.stringify(local[key])) continue;
+    const localBucket = local[key];
+    if (!localBucket) {
+      delete result[key];
+      continue;
+    }
+    const baseEntries = new Set((base[key]?.entries ?? []).map((entry) => JSON.stringify(entry)));
+    const localEntries = new Set(localBucket.entries.map((entry) => JSON.stringify(entry)));
+    const entries = (durable[key]?.entries ?? []).filter((entry) => {
+      const identity = JSON.stringify(entry);
+      return !baseEntries.has(identity) || localEntries.has(identity);
+    });
+    const present = new Set(entries.map((entry) => JSON.stringify(entry)));
+    for (const entry of localBucket.entries) {
+      const identity = JSON.stringify(entry);
+      if (!baseEntries.has(identity) && !present.has(identity)) entries.push(entry);
+    }
+    entries.sort((left, right) => left.submittedAt - right.submittedAt);
+    result[key] = {
+      touchedAt: Math.max(localBucket.touchedAt, durable[key]?.touchedAt ?? 0),
+      entries,
+    };
+  }
+  return result;
+};
+
+const readSnapshot = (): InputHistorySnapshot => {
+  const durable = readDurableSnapshot();
+  lastDurableSnapshot = durable;
+  if (!pendingWrite) return durable;
+  const { base, value } = pendingWrite;
+  return normalizeSnapshotLimits({
+    entryLimit: value.entryLimit === base.entryLimit ? durable.entryLimit : value.entryLimit,
+    scope: value.scope === base.scope ? durable.scope : value.scope,
+    globalBuckets: reconcilePendingBuckets(durable.globalBuckets, base.globalBuckets, value.globalBuckets),
+    sessionBuckets: reconcilePendingBuckets(durable.sessionBuckets, base.sessionBuckets, value.sessionBuckets),
+  });
 };
 
 const cloneEntriesWithLimit = (entries: readonly InputHistoryEntry[], limit: number): InputHistoryEntry[] => (
@@ -255,6 +307,7 @@ const isQuotaError = (error: Error | DOMException | null | undefined): boolean =
 const writeSnapshot = (snapshot: InputHistorySnapshot): InputHistorySnapshot => {
   const normalized = normalizeSnapshotLimits(snapshot);
   const serialized = JSON.stringify(toEnvelope(normalized));
+  pendingWrite = { base: lastDurableSnapshot, value: normalized };
   const storage = getDurableStorage();
 
   if (!storage) {
@@ -264,6 +317,7 @@ const writeSnapshot = (snapshot: InputHistorySnapshot): InputHistorySnapshot => 
 
   try {
     storage.setItem(STORAGE_KEY, serialized);
+    pendingWrite = null;
     inMemoryStorageValue = serialized;
     return normalized;
   } catch (error) {
@@ -284,10 +338,12 @@ const writeSnapshot = (snapshot: InputHistorySnapshot): InputHistorySnapshot => 
     const candidateSerialized = JSON.stringify(toEnvelope(candidate));
     try {
       storage.setItem(STORAGE_KEY, candidateSerialized);
+      pendingWrite = null;
       inMemoryStorageValue = candidateSerialized;
       return candidate;
     } catch (error) {
       if (!(error instanceof Error) || !isQuotaError(error)) {
+        pendingWrite = { base: lastDurableSnapshot, value: candidate };
         inMemoryStorageValue = candidateSerialized;
         return candidate;
       }
@@ -298,7 +354,9 @@ const writeSnapshot = (snapshot: InputHistorySnapshot): InputHistorySnapshot => 
   const emptySerialized = JSON.stringify(toEnvelope(emptySnapshot));
   try {
     storage.setItem(STORAGE_KEY, emptySerialized);
+    pendingWrite = null;
   } catch {
+    pendingWrite = { base: lastDurableSnapshot, value: emptySnapshot };
     // The in-memory copy remains the only fallback.
   }
   inMemoryStorageValue = emptySerialized;

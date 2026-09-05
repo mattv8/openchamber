@@ -4,6 +4,7 @@ import { linearIssuePickerI18n } from './linear-issue-picker.i18n';
 import { linearPanelI18n } from './linear-panel.i18n';
 
 export const dict: Record<I18nKey, string> = {
+  'sessions.sidebar.projectAction.active': 'プロジェクトアクション実行中',
   ...settingsDict,
   ...linearIssuePickerI18n.ja,
   ...linearPanelI18n.ja,
@@ -1646,7 +1647,7 @@ export const dict: Record<I18nKey, string> = {
   'chat.autoReview.reviewSessionLabel': 'レビューセッション',
   'chat.autoReview.actions.open': '開く',
   'chat.autoReview.actions.stop': '停止',
-  'chat.draftDirtyNotice.tooltip': 'このブランチには未コミットのファイルがあります。\n新しいセッションからも見えます。コミットまたはワークツリーで分けられます。',
+  'chat.draftDirtyNotice.tooltip': 'このブランチにはコミットされていない変更があります。\n新しいセッションの変更と競合する可能性があります。先にコミットするか、別のワークツリーを使うとよいかもしれません。',
   'chat.draftDirtyNotice.indicatorAria': 'このディレクトリに未コミットの変更があります',
   'rightSidebar.contextNotesTodo.plan.defaultTitle': '計画',
   'rightSidebar.contextNotesTodo.empty.selectProject': 'プロジェクトを選択してメモとTODOを追加します。',

@@ -706,4 +706,40 @@ describe('useInputHistoryStore', () => {
     expect(observer.selectInputHistoryEntries(observer.useInputHistoryStore.getState(), identity)).toHaveLength(25);
     expect(observer.selectInputHistoryEntries(observer.useInputHistoryStore.getState(), identity)[0]?.text).toBe('entry-5');
   });
+  test('retains failed appends while reconciling newer writes from another tab', async () => {
+    const storage = createFakeStorage();
+    installWindow(storage);
+    const tab = await importStoreModule();
+    const otherTab = await importStoreModule();
+    const identity = { runtimeKey: 'runtime-a', directory: '/repo', sessionId: 'session-a' };
+    const append = (text: string) => tab.useInputHistoryStore.getState().appendSubmissions(identity, [tab.createInputHistorySubmission(text, [])]);
+    append('A');
+    const write = storage.setItem;
+    storage.setItem = () => { throw new Error('write denied'); };
+    append('B');
+    storage.setItem = write;
+    otherTab.useInputHistoryStore.getState().appendSubmissions(identity, [otherTab.createInputHistorySubmission('other tab', [])]);
+    append('C');
+    const observer = await importStoreModule();
+    expect(observer.selectInputHistoryEntries(observer.useInputHistoryStore.getState(), identity).map((entry) => entry.text).sort()).toEqual(['A', 'B', 'C', 'other tab']);
+  });
+
+  test('a failed clear cannot resurrect its bucket after writes recover', async () => {
+    const storage = createFakeStorage();
+    installWindow(storage);
+    const tab = await importStoreModule();
+    const deleted = { runtimeKey: 'runtime-a', directory: '/repo', sessionId: 'deleted' };
+    const retained = { ...deleted, sessionId: 'retained' };
+    tab.useInputHistoryStore.getState().appendSubmissions(deleted, [tab.createInputHistorySubmission('A', [])]);
+    const write = storage.setItem;
+    storage.setItem = () => { throw new Error('write denied'); };
+    tab.useInputHistoryStore.getState().clearSession(deleted);
+    storage.setItem = write;
+    tab.useInputHistoryStore.getState().appendSubmissions(retained, [tab.createInputHistorySubmission('B', [])]);
+    const observer = await importStoreModule();
+    observer.useInputHistoryStore.getState().applyScope('session');
+    expect(observer.selectInputHistoryEntries(observer.useInputHistoryStore.getState(), deleted)).toEqual([]);
+    expect(observer.selectInputHistoryEntries(observer.useInputHistoryStore.getState(), retained).map((entry) => entry.text)).toEqual(['B']);
+  });
+
 });
