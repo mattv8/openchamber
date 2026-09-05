@@ -777,8 +777,6 @@ export const useGitStore = create<GitStore>()(
         inFlightEnsureAllByDirectory.clear();
         inFlightNestedRepoDiscovery.clear();
         inFlightHistoryRefsByDirectory.clear();
-        inFlightNestedRepoDiscovery.clear();
-        inFlightHistoryRefsByDirectory.clear();
         inFlightDiffFetchesByDirectory.clear();
         diffFetchGenerationByDirectory.clear();
         set({
