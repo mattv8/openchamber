@@ -221,7 +221,7 @@ describe('gitApiHttp index mutations', () => {
 });
 
 describe('gitApiHttp branch comparisons', () => {
-  test('sends commit hashes and rename paths without trimming and rejects incomplete commit lists', async () => {
+  test('sends commit hashes and rename paths without trimming', async () => {
     installWindowMock();
     const urls: URL[] = [];
     globalThis.fetch = Object.assign(async (input: RequestInfo | URL) => {
