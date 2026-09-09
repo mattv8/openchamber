@@ -30,6 +30,7 @@ const WORKTREE_BOOTSTRAP_PHASE_SETUP_READY = 'setup-ready';
 const GIT_NULL_REF = '0'.repeat(40);
 const WORKTREE_INDEX_LOCK_RETRY_DELAY_MS = 250;
 const WORKTREE_INDEX_LOCK_STALE_DELAY_MS = 750;
+const GIT_COMMAND_MAX_BUFFER = 20 * 1024 * 1024;
 
 const toBootstrapStateKey = (directory) => {
   const normalized = normalizeDirectoryPath(directory);
@@ -1026,18 +1027,38 @@ const runGitCommand = async (cwd, args, { timeoutMs = 0 } = {}) => {
       cwd,
       env: await buildGitEnv(),
       windowsHide: true,
-      maxBuffer: 20 * 1024 * 1024,
+      maxBuffer: GIT_COMMAND_MAX_BUFFER,
       // Only short probes pass a timeout; commands that legitimately run long
       // (a fetch into a temporary clone) keep the default of none.
       ...(timeoutMs > 0 ? { timeout: timeoutMs, killSignal: 'SIGKILL' } : {}),
     });
+    const stdoutText = String(stdout || '');
+    if (Buffer.byteLength(stdoutText) > GIT_COMMAND_MAX_BUFFER) {
+      return {
+        success: false,
+        exitCode: null,
+        stdout: '',
+        stderr: '',
+        message: `stdout maxBuffer length exceeded: ${GIT_COMMAND_MAX_BUFFER}`,
+      };
+    }
     return {
       success: true,
       exitCode: 0,
-      stdout: String(stdout || ''),
+      stdout: stdoutText,
       stderr: String(stderr || ''),
     };
   } catch (error) {
+    const stdout = String(error?.stdout || '');
+    if (Buffer.byteLength(stdout) > GIT_COMMAND_MAX_BUFFER) {
+      return {
+        success: false,
+        exitCode: null,
+        stdout: '',
+        stderr: '',
+        message: `stdout maxBuffer length exceeded: ${GIT_COMMAND_MAX_BUFFER}`,
+      };
+    }
     return {
       success: false,
       exitCode: Number.isInteger(error?.code) ? error.code : null,
@@ -3069,12 +3090,14 @@ const getNoIndexDiff = async (repoRoot, repoPath, contextLines) => {
   const result = await runGitCommand(repoRoot, args);
   // Exit 1 means differences, even when Git also writes warnings to stderr.
   // Spawn and buffer errors have no numeric exit code and must still fail.
+  if (Buffer.byteLength(result.stdout) > GIT_COMMAND_MAX_BUFFER || Buffer.byteLength(result.message || '') > GIT_COMMAND_MAX_BUFFER) {
+    throw new Error(`stdout maxBuffer length exceeded: ${GIT_COMMAND_MAX_BUFFER}`);
+  }
   if (result.exitCode === 0 || result.exitCode === 1) {
     return result.stdout;
   }
   throw new Error(result.stderr || result.message || 'Failed to get untracked Git diff');
 };
-
 export async function getDiff(directory, { path: filePath, staged = false, contextLines = 3 } = {}) {
   const context = await createRepositoryGitContext(directory);
   const fileContext = filePath
@@ -3275,6 +3298,36 @@ async function runWorkingTreeRangeDiff(context, baseRef, headRef, args, paths = 
   }
 }
 
+async function resolveRangeBaseRef(git, baseRef) {
+  let resolvedBase = baseRef;
+  if (!/[*?[\]^~:\\]/.test(baseRef)) {
+    const resolvesLocally = await git
+      .raw(['rev-parse', '--verify', `refs/heads/${baseRef}`])
+      .then((value) => Boolean(String(value || '').trim()))
+      .catch(() => false);
+
+    if (!resolvesLocally) {
+      const originCandidate = `refs/remotes/origin/${baseRef}`;
+      const originExists = await git.raw(['rev-parse', '--verify', originCandidate])
+        .then((value) => Boolean(String(value || '').trim()))
+        .catch(() => false);
+      if (originExists) {
+        resolvedBase = `origin/${baseRef}`;
+      } else {
+        const remoteMatch = await git
+          .raw(['for-each-ref', '--count=1', '--format=%(refname:short)', `refs/remotes/*/${baseRef}`])
+          .then((value) => String(value || '').trim())
+          .catch(() => '');
+        if (remoteMatch) {
+          resolvedBase = remoteMatch;
+        }
+      }
+    }
+  }
+
+  return resolvedBase;
+}
+
 export async function getRangeDiff(directory, { base, head, path: filePath, contextLines = 3, includeWorkingTree = false } = {}) {
   const { directoryPath, directoryGit, repoRoot, git } = await createRepositoryGitContext(directory);
   const baseRef = typeof base === 'string' ? base.trim() : '';
@@ -3283,7 +3336,8 @@ export async function getRangeDiff(directory, { base, head, path: filePath, cont
     throw new Error('base and head are required');
   }
 
-  await assertRangeRefsResolve(git, [baseRef, headRef]);
+  const resolvedBase = await resolveRangeBaseRef(git, baseRef);
+  await assertRangeRefsResolve(git, [resolvedBase, headRef]);
 
   const args = ['diff', '--no-color'];
   if (typeof contextLines === 'number' && !Number.isNaN(contextLines)) {
@@ -3298,7 +3352,7 @@ export async function getRangeDiff(directory, { base, head, path: filePath, cont
       if (error.code !== GIT_PATH_NOT_FOUND) throw error;
       // A committed deletion is absent from HEAD, the index, and the working
       // tree. It is still a valid range path when it exists at the merge base.
-      const mergeBase = (await git.raw(['merge-base', baseRef, headRef])).trim();
+      const mergeBase = (await git.raw(['merge-base', resolvedBase, headRef])).trim();
       for (const root of new Set([repoRoot, directoryPath])) {
         const target = path.resolve(root, filePath);
         if (!isInsideOrSameDirectory(repoRoot, target)) continue;
@@ -3313,10 +3367,9 @@ export async function getRangeDiff(directory, { base, head, path: filePath, cont
     }
   }
   if (includeWorkingTree) {
-    return runWorkingTreeRangeDiff({ git, repoRoot }, baseRef, headRef, args, paths);
+    return runWorkingTreeRangeDiff({ git, repoRoot }, resolvedBase, headRef, args, paths);
   }
-  args.push(`${baseRef}...${headRef}`, '--', ...paths);
-  const diff = await git.raw(args);
+  const diff = await git.raw([...args, `${resolvedBase}...${headRef}`, '--', ...paths]);
   return diff;
 }
 
@@ -3399,15 +3452,16 @@ export async function getRangeFiles(directory, { base, head, includeWorkingTree 
     throw new Error('base and head are required');
   }
 
-  await assertRangeRefsResolve(git, [baseRef, headRef]);
+  const resolvedBase = await resolveRangeBaseRef(git, baseRef);
+  await assertRangeRefsResolve(git, [resolvedBase, headRef]);
 
   // `-C` (copy detection among changed files only, so cheap) makes copies
   // surface as C entries instead of plain additions; rename detection is on
   // by default.
   const args = ['diff', '--name-status', '-z', '-C'];
   const raw = includeWorkingTree
-    ? await runWorkingTreeRangeDiff({ git, repoRoot }, baseRef, headRef, args)
-    : await git.raw([...args, `${baseRef}...${headRef}`, '--']);
+    ? await runWorkingTreeRangeDiff({ git, repoRoot }, resolvedBase, headRef, args)
+    : await git.raw([...args, `${resolvedBase}...${headRef}`, '--']);
   // -z format: STATUS\0PATH\0[ORIG\0] repeated. For rename/copy entries
   // (`R100`, `C75`) the first path token is the ORIGINAL path and the second
   // is the DESTINATION — the diff (and the UI) must address the destination.
