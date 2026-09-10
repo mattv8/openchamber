@@ -616,6 +616,30 @@ describe.runIf(canRunGit())('diffs for status paths that are not plain files', (
       expect(body).toEqual({ code: 'path_not_found', error: 'Path not found in working tree, index, or HEAD: removed.txt' });
     }
   });
+  it('rejects non-numeric process failures instead of treating them as diff exit 1', async () => {
+    if (process.platform === 'win32') return;
+    const { tmpDir } = await createTempRepo();
+    fs.writeFileSync(path.join(tmpDir, 'new.txt'), 'new\n');
+    const realGit = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+    const binDirectory = path.join(tmpDir, 'bin');
+    const gitShim = path.join(binDirectory, 'git');
+    fs.mkdirSync(binDirectory);
+    fs.writeFileSync(gitShim, [
+      '#!/bin/sh',
+      'if [ "$1" = "diff" ]; then /bin/rm -f "$0"; fi',
+      `exec ${JSON.stringify(realGit)} "$@"`,
+      '',
+    ].join('\n'));
+    fs.chmodSync(gitShim, 0o755);
+    const previousPath = process.env.PATH;
+    process.env.PATH = binDirectory;
+
+    try {
+      await expect(getDiff(tmpDir, { path: 'new.txt' })).rejects.toThrow(/ENOENT|spawn git/);
+    } finally {
+      process.env.PATH = previousPath;
+    }
+  });
 
   it('answers 422 for a nested repository that status lists as a directory', async () => {
     const { repository } = createRepositoryWithRemote();
