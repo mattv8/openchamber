@@ -53,7 +53,7 @@ The following functions are exported and used by the web server:
 - `getRemotes(directory)`: Get list of configured remotes.
 
 ### Worktree Operations
-- `getWorktrees(directory)`: List all git worktrees for a repository. A directory outside any repository (or one that does not exist) is an authoritative empty list; any other git failure throws so callers keep their last known topology instead of clearing it. `GET /api/git/worktrees` answers such a failure with 500.
+- `getWorktrees(directory)`: List all git worktrees for a repository. Worktrees Git marks `prunable` remain in the list so callers can remove their stale metadata. A directory outside any repository (or one that does not exist) is an authoritative empty list; any other git failure throws so callers keep their last known topology instead of clearing it. `GET /api/git/worktrees` answers such a failure with 500.
 - `observeWorktreeTopology(directory)`: Compare the repository's registered linked-worktree set with the last one seen for it and notify `subscribeWorktreeTopologyChanges` listeners when it changed. The set is fingerprinted from the `worktrees` directory under the common Git directory (mtime plus entry names), so the check is a stat and a readdir; the common directory is resolved with `git rev-parse --git-common-dir` once per requested directory and cached. The first observation only records a baseline. Never throws.
 - `subscribeWorktreeTopologyChanges(listener)`: Listener receives `{ directories, at }`, where `directories` are every directory of that repository the server has observed, so clients can map them onto registered projects. Returns an unsubscribe function.
 - `validateWorktreeCreate(directory, input)`: Validate worktree creation parameters (mode, branchName, startRef, upstream config).
@@ -162,6 +162,9 @@ The following functions are internal helpers used by exported functions:
 - `GET /api/git/range-diff` is served by the OpenChamber web server, so it is available to web, desktop, and mobile clients. The shared `GitAPI.getGitRangeDiff` is therefore optional: web supplies the HTTP implementation, and VS Code does not implement it because the extension host serves Git through its own bridge rather than these routes. Features built on range diffs (currently the AI diff walkthrough) are not offered in VS Code.
 - Commit comparison uses the same server boundary through optional `GitAPI.getGitCommitDiff`. Desktop Changes, mobile Changes, and the existing walkthrough surface share branch/commit comparison semantics. Mobile Changes uses the same selectors and `useGitComparison` file-list owner, with a read-only list-to-detail flow. VS Code keeps its existing modes because its Git bridge does not provide these comparison operations. The HTTP operations are available to web, Electron, hosted mobile, and Capacitor clients.
 
+### Runtime availability of commit comparison
+- Commit-file metadata and previews use the OpenChamber web server in web, Electron, hosted mobile, and Capacitor. VS Code provides the same parent-aware operations through its Git bridge, although the shared `DiffView` does not offer Commit scope there.
+
 ### Staged and unstaged change handling
 - Desktop Changes floats a compact action capsule after each hunk's last changed row,
   including single-hunk files. Whole-file controls remain in the Git panel.
@@ -259,6 +262,7 @@ The following functions are internal helpers used by exported functions:
 
 ### Error Handling
 - All exported functions should throw errors with descriptive messages.
+- `git diff --no-index` treats numeric exit code `1` as an ordinary difference. Spawn, buffer, and other process failures have no numeric Git exit code and must remain failures.
 - Use `console.error` for logging Git operation failures.
 - Return structured objects for operations that need partial success reporting (e.g., merge/rebase conflicts).
 
