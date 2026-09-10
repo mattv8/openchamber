@@ -789,6 +789,8 @@ const parseWorktreePorcelain = (raw) => {
     // needs that distinction: the directory is missing, but the sessions that
     // lived there are not.
     if (line === 'prunable' || line.startsWith('prunable ')) {
+      // Git retains worktree metadata after its directory disappears so callers
+      // can present it as removable instead of treating it as a live worktree.
       current.prunable = true;
     }
   }
@@ -3093,6 +3095,8 @@ const getNoIndexDiff = async (repoRoot, repoPath, contextLines) => {
   if (Buffer.byteLength(result.stdout) > GIT_COMMAND_MAX_BUFFER || Buffer.byteLength(result.message || '') > GIT_COMMAND_MAX_BUFFER) {
     throw new Error(`stdout maxBuffer length exceeded: ${GIT_COMMAND_MAX_BUFFER}`);
   }
+  // `git diff --no-index` uses numeric exit 1 for an ordinary difference;
+  // spawn, buffer, and other process failures have no Git exit code.
   if (result.exitCode === 0 || result.exitCode === 1) {
     return result.stdout;
   }
@@ -3281,6 +3285,8 @@ async function runWorkingTreeRangeDiff(context, baseRef, headRef, args, paths = 
   const untracked = await git.raw(['ls-files', '--others', '--exclude-standard', '-z', '--', ...paths]);
   if (!untracked) return readDiff(git);
 
+  // Stage untracked paths in a private index so the range includes the working
+  // tree without mutating the user's real index.
   const temporaryDirectory = await fsp.mkdtemp(path.join(os.tmpdir(), 'openchamber-branch-diff-'));
   try {
     const indexPath = (await git.raw(['rev-parse', '--git-path', 'index'])).trim();
@@ -3821,6 +3827,8 @@ export async function applyHunk(directory, filePath, options = {}) {
     const current = await getDiff(directory, { path: filePath, staged: action === 'unstage', contextLines: 3 });
     const starts = [...current.matchAll(/^@@\s/gm)].map((match) => match.index);
     const header = current.slice(0, starts[0] ?? 0);
+    // The submitted patch must exactly match one canonical current hunk, not
+    // merely apply at a compatible offset after surrounding edits changed.
     const isCurrentHunk = starts.some((start, index) => (
       header + current.slice(start, starts[index + 1] ?? current.length) === patch
     ));
