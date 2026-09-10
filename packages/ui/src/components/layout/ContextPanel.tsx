@@ -1538,7 +1538,7 @@ export const ContextPanel: React.FC = () => {
               // its pre-split behavior: the full working-tree stacked diff.
               <React.Suspense fallback={null}>
                 <DiffView
-                  visible={isOpen && activeTab?.id === tab.id}
+                  visible={isOpen}
                   hideStackedFileSidebar
                   stackedDefaultCollapsedAll
                   pinSelectedFileHeaderToTopOnNavigate
