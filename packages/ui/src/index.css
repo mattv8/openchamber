@@ -1820,11 +1820,6 @@ textarea[data-terminal-hidden-input="true"]::placeholder {
   transform-origin: center center;
 }
 
-/* Static dot shown instead of the spinner under reduced motion. */
-.activity-spinner-fallback {
-  display: none;
-}
-
 @keyframes navrail-dot-wave {
   0%, 100% {
     transform: scale(0.72);
@@ -1949,14 +1944,6 @@ textarea[data-terminal-hidden-input="true"]::placeholder {
   .animate-busy-wave,
   .animate-status-logo {
     animation: none;
-  }
-
-  .activity-spinner {
-    display: none;
-  }
-
-  .activity-spinner-fallback {
-    display: inline-block;
   }
 
 }
