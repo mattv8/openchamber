@@ -425,8 +425,8 @@ button svg,
  * value only WebKit parses, which keeps the rule where it was written for.
  */
 @supports (font: -apple-system-body) {
-  button svg:not(.animate-spin),
-  [role="button"] svg:not(.animate-spin) {
+  button svg:not(.animate-spin):not(.activity-spinner),
+  [role="button"] svg:not(.animate-spin):not(.activity-spinner) {
     transform: translateZ(0);
     -webkit-transform: translateZ(0);
   }
