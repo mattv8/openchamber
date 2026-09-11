@@ -240,6 +240,7 @@ const GitCommitHoverPopoverComponent: React.FC<GitCommitHoverPopoverProps> = ({
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {references.map((ref) => {
                   const isRemote = ref.kind === 'remote';
+                  const isHead = ref.kind === 'head';
                   const isTag = ref.kind === 'tag';
                   return (
                     <span
@@ -255,6 +256,7 @@ const GitCommitHoverPopoverComponent: React.FC<GitCommitHoverPopoverProps> = ({
                       style={ref.color ? { backgroundColor: ref.color } : undefined}
                     >
                       {isRemote && <Icon name="cloud" className="size-3 shrink-0" />}
+                      {isHead && <Icon name="target" className="size-3 shrink-0" />}
                       {isTag && <Icon name="git-commit" className="size-3 shrink-0" />}
                       <span className="truncate max-w-[200px]">{ref.name}</span>
                     </span>
