@@ -147,6 +147,9 @@ function getRefBadgeIcon(ref: GitHistoryGraphRef): IconName | null {
   if (ref.kind === 'remote') {
     return 'cloud';
   }
+  if (ref.kind === 'head') {
+    return 'target';
+  }
   return null;
 }
 
