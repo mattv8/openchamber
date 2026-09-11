@@ -274,10 +274,12 @@ describe('VS Code git history service parity', () => {
     });
     expect(firstPage.items[0].references).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'HEAD', kind: 'head' }),
-      expect.objectContaining({ id: 'refs/heads/feature', kind: 'local' }),
       expect.objectContaining({ id: 'refs/remotes/origin/feature', kind: 'remote' }),
       expect.objectContaining({ id: 'refs/tags/release/feature', kind: 'tag' }),
     ]));
+    expect(firstPage.items[0].references.filter((ref) => ref.name === 'feature')).toEqual([
+      expect.objectContaining({ id: 'HEAD', kind: 'head' }),
+    ]);
     expect(firstPage.hasMore).toBe(true);
     expect(firstPage.nextCursor).not.toBeNull();
 

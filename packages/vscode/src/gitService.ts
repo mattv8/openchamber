@@ -3593,8 +3593,6 @@ const buildGitHistoryDecorations = (
     }
     if (token.startsWith('HEAD -> ')) {
       pushHead();
-      const name = token.slice('HEAD -> '.length).trim();
-      pushRef(refsById.get(`refs/heads/${name}`) || refsById.get(name));
       continue;
     }
     if (token.startsWith('tag: ')) {

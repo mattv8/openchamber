@@ -995,9 +995,63 @@ describe('HistoryCommitRow context menu regression', () => {
     expect(remoteBadgeMarkup).toContain('class="size-3 shrink-0"');
     // Verify it renders the remote ref name
     expect(markup).toContain('>upstream/main<');
-    // Verify local ref does not have cloud icon, only remote does
+    // Verify local ref does not have cloud or target icon
     const featureMarkup = markup.substring(markup.indexOf('>feature<') - 150, markup.indexOf('>feature<') + 50);
     expect(featureMarkup).not.toContain('data-icon="cloud"');
+    expect(featureMarkup).not.toContain('data-icon="target"');
+  });
+
+  test('head refs render target icon in compact graph', () => {
+    const markup = renderToStaticMarkup(
+      <I18nProvider>
+        <ul>
+          <HistoryCommitRow
+            entry={{
+              id: 'abcdef1234567890',
+              parentIds: ['fedcba0987654321'],
+              subject: 'Head icon test subject',
+              message: 'Head icon test subject',
+              author: 'Taylor Developer',
+              authorEmail: 'taylor@example.com',
+              timestamp: '2024-01-02T03:04:00.000Z',
+              statistics: { files: 1, insertions: 2, deletions: 1 },
+              references: [],
+            }}
+            mode="graph"
+            compactGraph={true}
+            viewModel={{
+              historyItem: {
+                id: 'abcdef1234567890',
+                parentIds: ['fedcba0987654321'],
+                subject: 'Head icon test subject',
+                message: 'Head icon test subject',
+                author: 'Taylor Developer',
+                authorEmail: 'taylor@example.com',
+                timestamp: '2024-01-02T03:04:00.000Z',
+                statistics: { files: 1, insertions: 2, deletions: 1 },
+                references: [
+                  { id: 'HEAD', name: 'HEAD', revision: 'abcdef1234567890', kind: 'head', category: 'branches' },
+                ],
+              },
+              inputSwimlanes: [],
+              outputSwimlanes: [{ id: 'fedcba0987654321', color: 'var(--chart-1)' }],
+              nodeColor: 'var(--chart-1)',
+              kind: 'node',
+            }}
+            totalColumns={1}
+            isExpanded={false}
+            onToggle={() => {}}
+            files={[]}
+            isLoadingFiles={false}
+            onCopyHash={() => {}}
+            directory="/repo"
+          />
+        </ul>
+      </I18nProvider>,
+    );
+
+    const headBadgeMarkup = markup.substring(markup.indexOf('>HEAD<') - 200, markup.indexOf('>HEAD<') + 50);
+    expect(headBadgeMarkup).toContain('data-icon="target"');
   });
 
   test('remote refs render cloud icon and local refs render no icon in full graph badge branch', () => {

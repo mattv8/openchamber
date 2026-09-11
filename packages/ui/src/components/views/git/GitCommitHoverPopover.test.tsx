@@ -1071,7 +1071,7 @@ describe('GitCommitHoverPopover', () => {
     await rendered.restore();
   });
 
-  test('renders correct ref badge icons: cloud for remote, git-commit for tag, no icon for local/head', async () => {
+  test('renders correct ref badge icons: target for head, cloud for remote, git-commit for tag, no icon for local', async () => {
     const rendered = await renderPopover({
       references: [
         { id: 'ref-local', name: 'feature/local-branch', kind: 'local', revision: 'abcdef1', category: 'branches' },
@@ -1092,11 +1092,11 @@ describe('GitCommitHoverPopover', () => {
     const localIconSpan = findByAttribute(localRefBadge, 'data-icon');
     expect(localIconSpan).toBeNull();
 
-    // Head ref should have no icon
+    // Head ref should have target icon
     const headRefBadge = findByAttribute(rendered.container, 'data-git-commit-hover-ref', 'ref-head');
     expect(headRefBadge).not.toBeNull();
-    const headIconSpan = findByAttribute(headRefBadge, 'data-icon');
-    expect(headIconSpan).toBeNull();
+    const headIconSpan = findByAttribute(headRefBadge, 'data-icon', 'target');
+    expect(headIconSpan).not.toBeNull();
 
     // Remote ref should have cloud icon
     const remoteRefBadge = findByAttribute(rendered.container, 'data-git-commit-hover-ref', 'ref-remote');

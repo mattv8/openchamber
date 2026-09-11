@@ -2715,9 +2715,11 @@ describeIfGit('git history graph service', () => {
     });
     expect(firstPage.items[0].references).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'HEAD', kind: 'head' }),
-      expect.objectContaining({ id: 'refs/heads/feature', kind: 'local' }),
       expect.objectContaining({ id: 'refs/tags/release/feature', kind: 'tag' }),
     ]));
+    expect(firstPage.items[0].references.filter((ref) => ref.name === 'feature')).toEqual([
+      expect.objectContaining({ id: 'HEAD', kind: 'head' }),
+    ]);
     expect(firstPage.hasMore).toBe(true);
     expect(firstPage.nextCursor).not.toBeNull();
     expect(firstPage.nextCursor.length).toBeLessThan(256);
