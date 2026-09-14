@@ -18,7 +18,7 @@ describe('section registry', () => {
 
   test('preserves chosen positions and appends missing sections once', () => {
     const order = sanitizeWorkStatusSectionOrder(['pinned', 'repository', 'pinned', 'obsolete', 'session']);
-    expect(order).toEqual(['pinned', 'repository', 'session', 'usage', 'telemetry', 'subagents', 'tasks', 'mcp', 'contextSources']);
+    expect(order).toEqual(['pinned', 'repository', 'session', 'usage', 'telemetry', 'subagents', 'tasks', 'mcp', 'gitGraph', 'contextSources']);
     expect(sanitizeWorkStatusSectionOrder(JSON.parse(JSON.stringify(order)))).toEqual(order);
   });
 
