@@ -217,7 +217,7 @@ describe('GitGraphPanel real store regression', () => {
       getGitBranches: async () => ({ all: [], current: 'main', branches: {} }),
       getGitLog: async () => ({ all: [], latest: null, total: 0 }),
       getCurrentGitIdentity: async () => null,
-      getGitFileDiff: async (_directory, options) => ({ original: '', modified: '', path: options.path }),
+      getGitFileDiff: async (_directory, options) => ({ original: '', modified: '', path: options.path, submodule: null }),
       getGitHistoryRefs: async () => {
         requestCounts.refs += 1;
         return createHistoryRefs();
