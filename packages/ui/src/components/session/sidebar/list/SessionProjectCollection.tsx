@@ -17,7 +17,7 @@ import { createSessionOwnershipIndex } from '../sessions/sessionOwnership';
 import { useProjectSessionLists } from '../projects/useProjectSessionLists';
 import { useSessionSidebarSections } from '../projects/useSessionSidebarSections';
 import { SessionPrefetchEffect } from './useSessionPrefetch';
-import { formatProjectLabel, normalizePath } from '../utils';
+import { normalizePath } from '../utils';
 import type { SessionGroup } from '../types';
 import { SessionProjectScroller } from '../projects/SessionProjectScroller';
 import { useSessionGrouping } from '../projects/useSessionGrouping';
@@ -29,8 +29,7 @@ import type { DeleteSessionConfirmState } from '../sessions/useSessionActions';
 import { useExpandedParents } from '../sessions/useExpandedParents';
 import { getChatsRootForHome, getChatsRootFromDirectory } from '@/lib/chatDirectories';
 import { isCapacitorApp } from '@/lib/platform';
-import { formatDirectoryName } from '@/lib/utils';
-import { deriveRecentActivitySections, type RecentSessionLocation } from '../recent/activitySections';
+import { buildRecentSessionLocations, deriveRecentActivitySections } from '../recent/activitySections';
 import { buildSessionSidebarRowModel } from '../sessionSidebarRowModel';
 import { useSidebarGroupStatus } from './useSidebarGroupStatus';
 import { getSessionFolderOwnerKey, getSessionFolderScopes } from '../sessions/sessionFolderIdentity';
@@ -326,37 +325,21 @@ const VisibleSessionProjects: React.FC<SessionProjectCollectionProps> = ({ topol
     [getOrderedGroups, sectionsForSidebarRender],
   );
   const recentActivitySections = React.useMemo(() => {
-    const locations = new Map<string, RecentSessionLocation>();
-    for (const session of recentSessions) {
-      const directory = normalizePath(session.directory ?? null);
-      if (!directory) continue;
-      let owner: Project | null = null;
-      let ownerLength = -1;
-      for (const project of topology.projects) {
-        const projectPath = normalizePath(project.normalizedPath);
-        if (projectPath && (directory === projectPath || directory.startsWith(`${projectPath}/`)) && projectPath.length > ownerLength) {
-          owner = project;
-          ownerLength = projectPath.length;
-        }
-      }
-      if (!owner) continue;
-      const worktree = topology.availableWorktreesByProject.get(owner.normalizedPath)?.find((entry) => normalizePath(entry.path) === directory);
-      const projectLabel = formatProjectLabel(owner.label?.trim() || formatDirectoryName(owner.normalizedPath, view.homeDirectory) || owner.normalizedPath);
-      const branch = worktree?.branch?.trim() || topology.gitBranches.get(directory)?.trim() || null;
-      locations.set(session.id, {
-        projectId: owner.id,
-        groupDirectory: directory,
-        projectLabel,
-        branchLabel: branch && branch !== 'HEAD' && branch !== projectLabel ? branch : null,
-      });
-    }
+    const locations = buildRecentSessionLocations({
+      sessions: recentSessions,
+      sessionOwners: ownership.bySessionId,
+      projects: topology.projects,
+      availableWorktreesByProject: topology.availableWorktreesByProject,
+      gitBranches: topology.gitBranches,
+      homeDirectory: view.homeDirectory,
+    });
     return deriveRecentActivitySections({
       sessions: recentSessions,
       getSessionLocation: (sessionId) => locations.get(sessionId) ?? null,
       getSessionNode: (session) => buildActiveSessionNode(collection.childrenMap, session),
       query: view.hasSessionSearchQuery ? view.normalizedSessionSearchQuery : '',
     });
-  }, [collection.childrenMap, recentSessions, topology.availableWorktreesByProject, topology.gitBranches, topology.projects, view.hasSessionSearchQuery, view.homeDirectory, view.normalizedSessionSearchQuery]);
+  }, [collection.childrenMap, ownership.bySessionId, recentSessions, topology.availableWorktreesByProject, topology.gitBranches, topology.projects, view.hasSessionSearchQuery, view.homeDirectory, view.normalizedSessionSearchQuery]);
 
   const { groupStatusByKey, bootstrapSnapshot } = useSidebarGroupStatus({
     childStores,
