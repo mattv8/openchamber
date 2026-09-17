@@ -2,10 +2,11 @@ import React, { act } from 'react';
 import { describe, expect, mock, test, beforeEach } from 'bun:test';
 import { createRoot, type Root } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { Window } from 'happy-dom';
 import { I18nProvider } from '@/lib/i18n';
 import type { GitCommitChangedFile } from '@/lib/api/types';
 import type { GitCommitComparison } from './HistoryCommitRow';
-import { buildGitHistoryViewModels } from './gitGraph';
+import { buildGitHistoryViewModels, type GitHistoryGraphRef } from './gitGraph';
 
 Object.defineProperty(globalThis, 'localStorage', {
   configurable: true,
@@ -521,8 +522,11 @@ describe('HistoryCommitRow context menu regression', () => {
     expect(markup.indexOf('topic')).toBeLessThan(markup.indexOf('Taylor Developer'));
     expect(markup).toContain('h-[22px]');
     expect(markup).toContain('whitespace-nowrap');
-    expect(markup.match(/>topic<\/span>/g)).toHaveLength(1);
-    expect(markup).not.toContain('origin/topic');
+    expect(markup).toContain('data-git-ref-badge="HEAD"');
+    expect(markup).toContain('data-git-ref-badge-group="refs/heads/topic"');
+    expect(markup).toContain('data-git-ref-badge-group="refs/remotes/origin/topic"');
+    expect(markup).toContain('data-icon="target"');
+    expect(markup).toContain('data-icon="cloud"');
     expect(markup).toContain('title="v1"');
     expect(markup).not.toContain('>v1</span>');
     expect(markup).not.toContain('<code');
@@ -934,11 +938,11 @@ describe('HistoryCommitRow context menu regression', () => {
     expect(markup).toContain('width="22"');
     expect(markup).not.toContain('width="66"');
     expect(markup).toContain('data-icon="cloud"');
-    const localBranchMarkup = markup.substring(markup.indexOf('>local<') - 200, markup.indexOf('>local<') + 50);
-    expect(localBranchMarkup).not.toContain('data-icon="git-branch"');
+    expect(markup).toContain('data-git-ref-badge="refs/heads/local"');
+    expect(markup).toContain('data-icon="git-branch"');
   });
 
-  test('remote refs render cloud icon and local refs render no icon in compact graph', () => {
+  test('keeps an ordered local branch named and compacts its remote into a cloud badge', () => {
     const markup = renderToStaticMarkup(
       <I18nProvider>
         <ul>
@@ -967,8 +971,8 @@ describe('HistoryCommitRow context menu regression', () => {
                 timestamp: '2024-01-02T03:04:00.000Z',
                 statistics: { files: 1, insertions: 2, deletions: 1 },
                 references: [
-                  { id: 'refs/remotes/upstream/main', name: 'upstream/main', revision: 'abcdef1234567890', kind: 'remote', category: 'remote-branches' },
                   { id: 'refs/heads/feature', name: 'feature', revision: 'abcdef1234567890', kind: 'local', category: 'branches' },
+                  { id: 'refs/remotes/upstream/main', name: 'upstream/main', revision: 'abcdef1234567890', kind: 'remote', category: 'remote-branches' },
                 ],
               },
               inputSwimlanes: [],
@@ -988,17 +992,10 @@ describe('HistoryCommitRow context menu regression', () => {
       </I18nProvider>,
     );
 
-    // Verify remote ref has cloud icon
+    expect(markup).toContain('data-git-ref-badge="refs/heads/feature"');
+    expect(markup).toContain('data-git-ref-badge-group="refs/remotes/upstream/main"');
+    expect(markup).toContain('data-icon="git-branch"');
     expect(markup).toContain('data-icon="cloud"');
-    const remoteBadgeMarkup = markup.substring(markup.indexOf('data-icon="cloud"') - 200, markup.indexOf('>upstream/main<') + 50);
-    expect(remoteBadgeMarkup).toContain('h-4');
-    expect(remoteBadgeMarkup).toContain('class="size-3 shrink-0"');
-    // Verify it renders the remote ref name
-    expect(markup).toContain('>upstream/main<');
-    // Verify local ref does not have cloud or target icon
-    const featureMarkup = markup.substring(markup.indexOf('>feature<') - 150, markup.indexOf('>feature<') + 50);
-    expect(featureMarkup).not.toContain('data-icon="cloud"');
-    expect(featureMarkup).not.toContain('data-icon="target"');
   });
 
   test('head refs render target icon in compact graph', () => {
@@ -1054,7 +1051,7 @@ describe('HistoryCommitRow context menu regression', () => {
     expect(headBadgeMarkup).toContain('data-icon="target"');
   });
 
-  test('remote refs render cloud icon and local refs render no icon in full graph badge branch', () => {
+  test('full graph preserves a prioritized remote followed by a local branch badge', () => {
     const markup = renderToStaticMarkup(
       <I18nProvider>
         <ul>
@@ -1228,4 +1225,116 @@ describe('HistoryCommitRow context menu regression', () => {
     expect(markup).toContain('width="44"');
     expect(markup).toContain('M 22 11 A 11 11 0 0 1 33 22 M 22 11 H 11');
   });
+});
+
+describe('HistoryCommitRow badge behavior coverage', () => {
+  beforeEach(() => {
+    resetRegistries();
+  });
+
+  const renderBadges = (references: GitHistoryGraphRef[], compactGraph: boolean) => {
+    const entry: React.ComponentProps<typeof HistoryCommitRow>['entry'] = {
+      id: 'abc123',
+      parentIds: ['def456'],
+      subject: 'Badge contract',
+      message: 'Badge contract',
+      author: 'Taylor Developer',
+      authorEmail: 'taylor@example.com',
+      timestamp: '2024-01-02T03:04:00.000Z',
+      statistics: { files: 1, insertions: 2, deletions: 1 },
+      references: [],
+    };
+    const document = new Window().document;
+    document.body.innerHTML = renderToStaticMarkup(
+      <I18nProvider>
+        <ul>
+          <HistoryCommitRow
+            entry={entry}
+            mode="graph"
+            compactGraph={compactGraph}
+            viewModel={{
+              historyItem: { ...entry, references },
+              inputSwimlanes: [],
+              outputSwimlanes: [{ id: 'def456', color: 'var(--chart-1)' }],
+              nodeColor: 'var(--chart-1)',
+              kind: 'node',
+            }}
+            totalColumns={1}
+            isExpanded={false}
+            onToggle={() => {}}
+            files={[]}
+            isLoadingFiles={false}
+            onCopyHash={() => {}}
+            directory="/repo"
+          />
+        </ul>
+      </I18nProvider>,
+    );
+    const container = document.querySelector(`[data-git-ref-badges="${compactGraph ? 'compact' : 'full'}"]`);
+    if (!container) throw new Error('Expected a graph badge container');
+    return Array.from(container.children);
+  };
+
+  const head: GitHistoryGraphRef = { id: 'HEAD', name: 'beta', revision: 'abc123', kind: 'head', category: 'branches' };
+  const upstream: GitHistoryGraphRef = { id: 'refs/remotes/origin/beta', name: 'origin/beta', revision: 'abc123', kind: 'remote', category: 'remote-branches' };
+  const local: GitHistoryGraphRef = { id: 'refs/heads/followups', name: 'followups', revision: 'abc123', kind: 'local', category: 'branches' };
+  const tag: GitHistoryGraphRef = { id: 'refs/tags/v1.0.0', name: 'v1.0.0', revision: 'abc123', kind: 'tag', category: 'tags' };
+
+  for (const { layout, compactGraph } of [{ layout: 'compact', compactGraph: true }, { layout: 'full', compactGraph: false }]) {
+    for (const { ref, icon } of [
+      { ref: head, icon: 'target' },
+      { ref: local, icon: 'git-branch' },
+    ]) {
+      test(`${layout}: keeps the primary ${ref.kind} named and the upstream name sr-only`, () => {
+        const badges = renderBadges([ref, upstream], compactGraph);
+        expect(badges).toHaveLength(2);
+        const [primary, secondary] = badges;
+        expect(primary.getAttribute('data-git-ref-badge')).toBe(ref.id);
+        expect(primary.querySelector('[data-icon]')?.getAttribute('data-icon')).toBe(icon);
+        expect(primary.textContent).toBe(ref.name);
+        expect(primary.querySelector('.sr-only')).toBeNull();
+        expect(secondary.getAttribute('data-git-ref-badge-group')).toBe(upstream.id);
+        expect(secondary.querySelector('[data-icon]')?.getAttribute('data-icon')).toBe('cloud');
+        expect(secondary.querySelector('.sr-only')?.textContent).toBe(upstream.name);
+        expect(secondary.textContent).toBe(upstream.name);
+        expect(secondary.querySelector('[aria-hidden]')).toBeNull();
+      });
+    }
+
+    for (const { ref, icon } of [
+      { ref: { ...head, name: 'HEAD' }, icon: 'target' },
+      { ref: local, icon: 'git-branch' },
+      { ref: upstream, icon: 'cloud' },
+      { ref: tag, icon: 'git-commit' },
+    ]) {
+      test(`${layout}: keeps a lone ${ref.kind} named with its own icon`, () => {
+        const badges = renderBadges([ref], compactGraph);
+        expect(badges).toHaveLength(1);
+        const [badge] = badges;
+        expect(badge.getAttribute('data-git-ref-badge')).toBe(ref.id);
+        expect(badge.querySelector('[data-icon]')?.getAttribute('data-icon')).toBe(icon);
+        expect(badge.textContent).toBe(ref.name);
+        expect(badge.querySelector('.sr-only')).toBeNull();
+      });
+    }
+
+    test(`${layout}: preserves HEAD, upstream, local ordering and groups adjacent remotes with a count`, () => {
+      const fork: GitHistoryGraphRef = { ...upstream, id: 'refs/remotes/fork/beta', name: 'fork/beta' };
+      const badges = renderBadges([head, upstream, fork, local, tag], compactGraph);
+      expect(badges.map((badge) => badge.getAttribute('data-git-ref-badge') ?? badge.getAttribute('data-git-ref-badge-group'))).toEqual([
+        head.id, upstream.id, local.id,
+      ]);
+      expect(badges.map((badge) => badge.querySelector('[data-icon]')?.getAttribute('data-icon'))).toEqual([
+        'target', 'cloud', 'git-branch',
+      ]);
+      const [primary, remotes, followups] = badges;
+      expect(primary.textContent).toBe(head.name);
+      expect(remotes.querySelector('[aria-hidden="true"]')?.textContent).toBe('2');
+      expect(remotes.querySelector('.sr-only')?.textContent).toBe('origin/beta, fork/beta');
+      expect(remotes.textContent).toBe('2origin/beta, fork/beta');
+      expect(followups.querySelector('.sr-only')?.textContent).toBe(local.name);
+      expect(followups.textContent).toBe(local.name);
+      expect(followups.querySelector('[aria-hidden]')).toBeNull();
+    });
+  }
 });

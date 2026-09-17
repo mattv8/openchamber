@@ -11,7 +11,6 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Icon } from "@/components/icon/Icon";
-import type { IconName } from "@/components/icon/icons";
 import { cn } from '@/lib/utils';
 import type { GitCommitChangedFile, GitLogEntry, GitHistoryItem } from '@/lib/api/types';
 import type { GitCommitHoverDetailsCache } from '@/lib/api/types';
@@ -32,6 +31,7 @@ import {
   type GitCommitChangedFilesSnapshot,
 } from './GitCommitChangedFiles';
 import { buildGitHubCommitUrl } from './gitCommitRemote';
+import { buildGitRefBadgePresentation } from './gitRefBadges';
 
 const PENDING_ACTION_CONFIRM_LABELS = {
   checkout: 'gitView.history.actions.checkoutConfirm',
@@ -141,16 +141,6 @@ function getRefBadgeClasses(ref: GitHistoryGraphRef): string {
   }
 
   return 'border-border/60 bg-background/80 text-foreground';
-}
-
-function getRefBadgeIcon(ref: GitHistoryGraphRef): IconName | null {
-  if (ref.kind === 'remote') {
-    return 'cloud';
-  }
-  if (ref.kind === 'head') {
-    return 'target';
-  }
-  return null;
 }
 
 export const HistoryCommitRow = React.memo(({
@@ -416,10 +406,7 @@ export const HistoryCommitRow = React.memo(({
   }, [ensureExpanded]);
 
   const graphBadges: GitHistoryGraphRef[] = viewModel?.historyItem.references ?? [];
-  const visibleGraphBadges = graphBadges.filter((badge) => badge.kind !== 'tag');
-  const compactGraphBadges = visibleGraphBadges.some((badge) => badge.kind === 'head')
-    ? visibleGraphBadges.filter((badge) => badge.kind === 'head')
-    : visibleGraphBadges;
+  const graphBadgePresentation = buildGitRefBadgePresentation(graphBadges);
   const tagNames = graphBadges.filter((badge) => badge.kind === 'tag' && !badge.color).map((badge) => badge.name).join(', ') || undefined;
 
   const hoverModel = React.useMemo(() => {
@@ -473,21 +460,34 @@ export const HistoryCommitRow = React.memo(({
             )}>
               {getEntryMessage(entry)}
             </span>
-            {compactGraphBadges.length > 0 ? (
-              <div className="flex max-w-[50%] shrink-0 items-center gap-1 overflow-hidden whitespace-nowrap">
-                {compactGraphBadges.map((badge) => {
-                  const iconName = getRefBadgeIcon(badge);
+            {graphBadgePresentation.primary ? (
+              <div className="flex min-w-0 max-w-[50%] shrink-0 items-center gap-1 overflow-hidden whitespace-nowrap" data-git-ref-badges="compact">
+                <span
+                  data-git-ref-badge={graphBadgePresentation.primary.ref.id}
+                  className={cn(
+                    'inline-flex h-4 min-w-0 max-w-40 items-center gap-1 rounded-full border px-1.5 py-0 typography-micro font-medium',
+                    getRefBadgeClasses(graphBadgePresentation.primary.ref),
+                  )}
+                  style={graphBadgePresentation.primary.ref.color ? { backgroundColor: graphBadgePresentation.primary.ref.color } : undefined}
+                >
+                  <Icon name={graphBadgePresentation.primary.icon} className="size-3 shrink-0" />
+                  <span className="truncate">{graphBadgePresentation.primary.ref.name}</span>
+                </span>
+                {graphBadgePresentation.secondary.map((group) => {
+                  const firstRef = group.refs[0];
                   return (
                     <span
-                      key={badge.id}
+                      key={firstRef.id}
+                      data-git-ref-badge-group={firstRef.id}
                       className={cn(
-                        'inline-flex h-4 min-w-0 max-w-40 items-center gap-1 whitespace-nowrap rounded-full border px-1.5 py-0 typography-micro font-medium',
-                        getRefBadgeClasses(badge),
+                        'inline-flex h-4 shrink-0 items-center gap-1 rounded-full border px-1.5 py-0 typography-micro font-medium',
+                        getRefBadgeClasses(firstRef),
                       )}
-                      style={badge.color ? { backgroundColor: badge.color } : undefined}
+                      style={firstRef.color ? { backgroundColor: firstRef.color } : undefined}
                     >
-                      {iconName ? <Icon name={iconName} className="size-3 shrink-0" /> : null}
-                      <span className="truncate">{badge.name}</span>
+                      <Icon name={group.icon} className="size-3 shrink-0" />
+                      {group.refs.length > 1 ? <span aria-hidden>{group.refs.length}</span> : null}
+                      <span className="sr-only">{group.refs.map((ref) => ref.name).join(', ')}</span>
                     </span>
                   );
                 })}
@@ -499,21 +499,34 @@ export const HistoryCommitRow = React.memo(({
           </div>
         ) : (
           <>
-            {isGraphMode && visibleGraphBadges.length > 0 ? (
-              <div className="mb-0.5 flex flex-wrap gap-1">
-                {visibleGraphBadges.map((badge) => {
-                  const iconName = getRefBadgeIcon(badge);
+            {isGraphMode && graphBadgePresentation.primary ? (
+              <div className="mb-0.5 flex flex-wrap gap-1" data-git-ref-badges="full">
+                <span
+                  data-git-ref-badge={graphBadgePresentation.primary.ref.id}
+                  className={cn(
+                    'inline-flex h-4 items-center gap-1 rounded-full border px-1.5 py-0 typography-micro font-medium',
+                    getRefBadgeClasses(graphBadgePresentation.primary.ref),
+                  )}
+                  style={graphBadgePresentation.primary.ref.color ? { backgroundColor: graphBadgePresentation.primary.ref.color } : undefined}
+                >
+                  <Icon name={graphBadgePresentation.primary.icon} className="size-3 shrink-0" />
+                  {graphBadgePresentation.primary.ref.name}
+                </span>
+                {graphBadgePresentation.secondary.map((group) => {
+                  const firstRef = group.refs[0];
                   return (
                     <span
-                      key={badge.id}
+                      key={firstRef.id}
+                      data-git-ref-badge-group={firstRef.id}
                       className={cn(
                         'inline-flex h-4 items-center gap-1 rounded-full border px-1.5 py-0 typography-micro font-medium',
-                        getRefBadgeClasses(badge),
+                        getRefBadgeClasses(firstRef),
                       )}
-                      style={badge.color ? { backgroundColor: badge.color } : undefined}
+                      style={firstRef.color ? { backgroundColor: firstRef.color } : undefined}
                     >
-                      {iconName ? <Icon name={iconName} className="size-3 shrink-0" /> : null}
-                      {badge.name}
+                      <Icon name={group.icon} className="size-3 shrink-0" />
+                      {group.refs.length > 1 ? <span aria-hidden>{group.refs.length}</span> : null}
+                      <span className="sr-only">{group.refs.map((ref) => ref.name).join(', ')}</span>
                     </span>
                   );
                 })}

@@ -9,6 +9,7 @@ import type { GitCommitHoverDetailsCache } from '@/lib/api/types';
 import type { GitHistoryGraphRef } from './gitGraph';
 import type { GitCommitHoverModel } from './gitCommitHoverModel';
 import { buildGitHubCommitUrl } from './gitCommitRemote';
+import { getGitRefBadgeIcon } from './gitRefBadges';
 
 const HOVER_PRELOAD_DELAY_MS = 75;
 const HOVER_OPEN_DELAY_MS = 300;
@@ -237,11 +238,10 @@ const GitCommitHoverPopoverComponent: React.FC<GitCommitHoverPopoverProps> = ({
 
             {/* Line 4: Reference badges */}
             {references && references.length > 0 ? (
-              <div className="mt-2 flex flex-wrap gap-1.5">
+              <div data-git-commit-hover-refs={model.hash} className="mt-2 flex flex-wrap gap-1.5">
                 {references.map((ref) => {
-                  const isRemote = ref.kind === 'remote';
-                  const isHead = ref.kind === 'head';
                   const isTag = ref.kind === 'tag';
+                  const icon = getGitRefBadgeIcon(ref);
                   return (
                     <span
                       key={ref.id}
@@ -255,9 +255,7 @@ const GitCommitHoverPopoverComponent: React.FC<GitCommitHoverPopoverProps> = ({
                       )}
                       style={ref.color ? { backgroundColor: ref.color } : undefined}
                     >
-                      {isRemote && <Icon name="cloud" className="size-3 shrink-0" />}
-                      {isHead && <Icon name="target" className="size-3 shrink-0" />}
-                      {isTag && <Icon name="git-commit" className="size-3 shrink-0" />}
+                      <Icon name={icon} className="size-3 shrink-0" />
                       <span className="truncate max-w-[200px]">{ref.name}</span>
                     </span>
                   );
