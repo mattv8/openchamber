@@ -195,7 +195,7 @@ const GitCommitHoverPopoverComponent: React.FC<GitCommitHoverPopoverProps> = ({
                 className="truncate font-semibold text-sky-400"
                 title={authorSecondary ? `${authorName} (${authorSecondary})` : authorName}
               >
-                {authorName},
+                {authorName}
               </span>
               <Icon name="history" className="size-3.5 shrink-0 text-muted-foreground" />
               <span className="truncate" title={absoluteTimestamp}>
