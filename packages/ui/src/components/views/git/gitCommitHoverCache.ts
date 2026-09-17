@@ -17,7 +17,7 @@ const DEFAULT_MAX_POSITIVE_ENTRIES = 200;
 const DEFAULT_NEGATIVE_TTL_MS = 60_000;
 const IDLE_DETAILS_SNAPSHOT: GitCommitHoverDetailsSnapshot = Object.freeze({ status: 'idle' });
 
-export type RuntimeImageConstructor = new () => {
+type RuntimeImageConstructor = new () => {
   onload: null | ((event: Event) => void) | (() => void);
   onerror: null | ((event: Event) => void) | (() => void);
   src: string;

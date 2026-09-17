@@ -326,7 +326,7 @@ const createRuntimeApis = (gitOverrides: Partial<RuntimeAPIs['git']> = {}, githu
       getGitHistoryRefs: async () => createHistoryRefs(),
       getGitHistory: async () => createHistoryPage(),
       getGitDiff: unexpectedAsync,
-      getGitFileDiff: async (_directory, options) => ({ original: '', modified: '', path: options.path }),
+      getGitFileDiff: async (_directory, options) => ({ original: '', modified: '', path: options.path, submodule: null }),
       revertGitFile: unexpectedAsync,
       stageGitFile: unexpectedAsync,
       unstageGitFile: unexpectedAsync,
