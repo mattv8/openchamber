@@ -642,6 +642,11 @@ describe('VS Code git history service parity', () => {
   });
 
   it('uses --root comparisons for root commits and ignores malformed records', async () => {
+    setGitResponse(['rev-list', '--parents', '-n', '1', '--end-of-options', 'root123'], {
+      stdout: 'root123\n',
+      stderr: '',
+      exitCode: 0,
+    });
     setGitResponse(
       ['diff-tree', '--root', '-r', '--no-commit-id', '-M', '--raw', '--numstat', '--no-abbrev', '-z', 'root123'],
       {
@@ -669,6 +674,18 @@ describe('VS Code git history service parity', () => {
         },
       ],
     });
+  });
+
+  it('rejects a null parent hash for a non-root commit', async () => {
+    setGitResponse(['rev-list', '--parents', '-n', '1', '--end-of-options', 'commit456'], {
+      stdout: 'commit456 parent123\n',
+      stderr: '',
+      exitCode: 0,
+    });
+
+    await expect(getCommitFiles('/repo', { commitHash: 'commit456', parentHash: null }))
+      .rejects.toThrow('parentHash is required for non-root commit commit456');
+    expect(spawnCalls.some((call) => call.args[0] === 'diff-tree')).toBe(false);
   });
 
   it('throws when the explicit parent diff-tree lookup fails', async () => {

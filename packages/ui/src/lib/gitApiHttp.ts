@@ -78,6 +78,10 @@ const gitCommitFilesSchema = z.object({
     isBinary: z.boolean(),
   })),
 });
+const gitCommitFilePreviewSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('ready'), original: z.string(), modified: z.string() }),
+  z.object({ status: z.literal('too-large'), totalBytes: z.number(), maxBytes: z.number() }),
+]);
 
 // Servers before #3586 send no `submodule`; that means "not known to be one".
 const gitPathDiffSchema = z.object({ diff: z.string(), submodule: gitSubmoduleStateSchema.nullable().default(null) });
@@ -1132,9 +1136,9 @@ export async function getCommitFileDiff(
     })
   );
   if (!response.ok) {
-    throw new Error(`Failed to get commit file diff: ${response.statusText}`);
+    throw await rangeResponseError(response, 'Failed to get commit file diff');
   }
-  return response.json();
+  return gitCommitFilePreviewSchema.parse(await response.json());
 }
 
 export async function getGitIdentities(): Promise<GitIdentityProfile[]> {
