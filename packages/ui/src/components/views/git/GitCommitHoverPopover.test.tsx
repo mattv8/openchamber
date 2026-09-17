@@ -9,6 +9,7 @@ import type {
   GitHubCommitDetails,
 } from '@/lib/api/types';
 import { createGitCommitHoverDetailsCache } from './gitCommitHoverCache';
+import type { GitHistoryGraphRef } from './gitGraph';
 
 type MockButtonProps = React.PropsWithChildren<React.ButtonHTMLAttributes<HTMLButtonElement>>;
 type PopoverReason = 'trigger-hover' | 'trigger-focus' | 'trigger-press' | 'escape-key' | 'imperative-action';
@@ -107,6 +108,7 @@ interface ElementStub {
   parentNode: ElementStub | null;
   childNodes: NodeStub[];
   style: Record<string, string>;
+  textContent: string;
   addEventListener(): void;
   removeEventListener(): void;
   appendChild(child: NodeStub): NodeStub;
@@ -183,6 +185,7 @@ const createElementStub = (tag: string, ownerDocument: DocumentStub): ElementStu
   parentNode: null,
   childNodes: [],
   style: {},
+  textContent: '',
   addEventListener() {},
   removeEventListener() {},
   appendChild(child) { this.childNodes.push(child); child.parentNode = this; return child; },
@@ -1071,7 +1074,7 @@ describe('GitCommitHoverPopover', () => {
     await rendered.restore();
   });
 
-  test('renders correct ref badge icons: target for head, cloud for remote, git-commit for tag, no icon for local', async () => {
+  test('renders correct ref badge icons: target for head, git-branch for local, cloud for remote, and git-commit for tag', async () => {
     const rendered = await renderPopover({
       references: [
         { id: 'ref-local', name: 'feature/local-branch', kind: 'local', revision: 'abcdef1', category: 'branches' },
@@ -1086,11 +1089,11 @@ describe('GitCommitHoverPopover', () => {
       await flush();
     });
 
-    // Local ref should have no icon
+    // Local refs use the same branch icon as graph rows.
     const localRefBadge = findByAttribute(rendered.container, 'data-git-commit-hover-ref', 'ref-local');
     expect(localRefBadge).not.toBeNull();
-    const localIconSpan = findByAttribute(localRefBadge, 'data-icon');
-    expect(localIconSpan).toBeNull();
+    const localIconSpan = findByAttribute(localRefBadge, 'data-icon', 'git-branch');
+    expect(localIconSpan).not.toBeNull();
 
     // Head ref should have target icon
     const headRefBadge = findByAttribute(rendered.container, 'data-git-commit-hover-ref', 'ref-head');
@@ -1111,5 +1114,41 @@ describe('GitCommitHoverPopover', () => {
     expect(tagIconSpan).not.toBeNull();
 
     await rendered.restore();
+  });
+
+  test('preserves ranked reference order with full names, colors, and per-badge icons', async () => {
+    const hash = 'abcdef1234567890';
+    const references: GitHistoryGraphRef[] = [
+      { id: 'HEAD', name: 'beta', kind: 'head', revision: hash, category: 'branches', color: 'var(--chart-1)' },
+      { id: 'refs/remotes/origin/beta', name: 'origin/beta', kind: 'remote', revision: hash, category: 'remote-branches', color: 'var(--chart-2)' },
+      { id: 'refs/heads/followups', name: 'followups', kind: 'local', revision: hash, category: 'branches', color: 'var(--chart-3)' },
+      { id: 'refs/tags/v1.2.3', name: 'v1.2.3', kind: 'tag', revision: hash, category: 'tags', color: 'var(--chart-4)' },
+    ];
+    const rendered = await renderPopover({ references });
+
+    try {
+      await act(async () => {
+        triggerRegistry.get(hash)?.focus();
+        await flush();
+      });
+
+      const refsContainer = findByAttribute(rendered.container, 'data-git-commit-hover-refs', hash);
+      expect(refsContainer).not.toBeNull();
+      const badges = refsContainer?.childNodes.filter(isElementStub) ?? [];
+      expect(badges.map((badge) => badge.attributes['data-git-commit-hover-ref'])).toEqual(
+        references.map((ref) => ref.id),
+      );
+
+      const icons = ['target', 'cloud', 'git-branch', 'git-commit'];
+      badges.forEach((badge, index) => {
+        const ref = references[index];
+        expect(badge.style.backgroundColor).toBe(ref.color);
+        const children = badge.childNodes.filter(isElementStub);
+        expect(children.filter((child) => child.attributes['data-icon']).map((child) => child.attributes['data-icon'])).toEqual([icons[index]]);
+        expect(children.filter((child) => !child.attributes['data-icon']).map((child) => child.textContent)).toEqual([ref.name]);
+      });
+    } finally {
+      await rendered.restore();
+    }
   });
 });
