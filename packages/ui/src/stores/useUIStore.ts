@@ -261,6 +261,7 @@ const normalizeRepositoryScopedDirectoryKey = (value: string): string => normali
 
 const GIT_REPOSITORY_PANE_GRAPH_HEIGHT_MIN = 180;
 const GIT_REPOSITORY_PANE_GRAPH_HEIGHT_MAX = 720;
+const MAX_GIT_REPOSITORY_PANE_STATES = 20;
 const DEFAULT_GIT_GRAPH_PANE_COLLAPSED = true;
 const DEFAULT_GIT_GRAPH_PANE_HEIGHT = 280;
 const gitGraphPaneCollapsedSchema = z.boolean().catch(DEFAULT_GIT_GRAPH_PANE_COLLAPSED);
@@ -298,6 +299,15 @@ const sanitizeGitRepositoryPaneState = (value: z.input<typeof gitRepositoryPaneS
   return { ...parsed };
 };
 
+const clampGitRepositoryPaneStates = (
+  states: Record<string, GitRepositoryPaneState>,
+): Record<string, GitRepositoryPaneState> => {
+  const entries = Object.entries(states);
+  return entries.length <= MAX_GIT_REPOSITORY_PANE_STATES
+    ? states
+    : Object.fromEntries(entries.slice(-MAX_GIT_REPOSITORY_PANE_STATES));
+};
+
 const sanitizeGitRepositoryPaneStates = (value: z.output<typeof gitRepositoryPaneStatesSchema>) => {
   const nextEntries: Array<[string, GitRepositoryPaneState]> = [];
   for (const [rawKey, rawValue] of Object.entries(value)) {
@@ -306,7 +316,7 @@ const sanitizeGitRepositoryPaneStates = (value: z.output<typeof gitRepositoryPan
     }
     nextEntries.push([rawKey, sanitizeGitRepositoryPaneState(rawValue)]);
   }
-  return Object.fromEntries(nextEntries);
+  return clampGitRepositoryPaneStates(Object.fromEntries(nextEntries));
 };
 
 export const gitRepositoryPanePreferenceKey = (directory: string, runtimeKey?: string | null): string => JSON.stringify([
@@ -2705,10 +2715,10 @@ export const useUIStore = create<UIStore>()(
             }
 
             return {
-              gitRepositoryPaneStates: {
-                ...state.gitRepositoryPaneStates,
-                [key]: next,
-              },
+              gitRepositoryPaneStates: clampGitRepositoryPaneStates(Object.fromEntries([
+                ...Object.entries(state.gitRepositoryPaneStates).filter(([entryKey]) => entryKey !== key),
+                [key, next],
+              ])),
             };
           });
         },

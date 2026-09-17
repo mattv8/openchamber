@@ -1314,4 +1314,46 @@ describe('useUIStore git repository pane state', () => {
     expect('graphCollapsed' in paneStates['["runtime-a","/repo"]']).toBe(false);
     expect('graphHeight' in paneStates['["runtime-a","/repo"]']).toBe(false);
   });
+
+  test('keeps the twenty most recently written repository pane states', () => {
+    const store = useUIStore.getState();
+    for (let index = 0; index < 21; index += 1) {
+      store.setGitRepositoryPaneState(`/repo-${index}`, { changesCollapsed: true }, 'runtime-a');
+    }
+
+    store.setGitRepositoryPaneState('/repo-1', { graphFilterMode: 'manual' }, 'runtime-a');
+    store.setGitRepositoryPaneState('/repo-21', { changesCollapsed: true }, 'runtime-a');
+
+    const paneStates = useUIStore.getState().gitRepositoryPaneStates;
+    expect(Object.keys(paneStates)).toHaveLength(20);
+    expect(store.getGitRepositoryPaneState('/repo-0', 'runtime-a')).toEqual({
+      changesCollapsed: false,
+      graphFilterMode: 'auto',
+      graphManualRefIds: [],
+    });
+    expect(store.getGitRepositoryPaneState('/repo-1', 'runtime-a').graphFilterMode).toBe('manual');
+    expect(store.getGitRepositoryPaneState('/repo-2', 'runtime-a')).toEqual({
+      changesCollapsed: false,
+      graphFilterMode: 'auto',
+      graphManualRefIds: [],
+    });
+    expect(store.getGitRepositoryPaneState('/repo-21', 'runtime-a').changesCollapsed).toBe(true);
+  });
+
+  test('clamps oversized persisted repository pane states during migration', () => {
+    const persistedPaneStates = Object.fromEntries(Array.from({ length: 21 }, (_, index) => [
+      `["runtime-a","/repo-${index}"]`,
+      { changesCollapsed: true },
+    ]));
+    const migrated = useUIStore.persist.getOptions().migrate?.({ gitRepositoryPaneStates: persistedPaneStates }, 21);
+    const paneStates = JSON.parse(JSON.stringify(migrated)).gitRepositoryPaneStates;
+
+    expect(Object.keys(paneStates)).toHaveLength(20);
+    expect(paneStates['["runtime-a","/repo-0"]']).toBeUndefined();
+    expect(paneStates['["runtime-a","/repo-20"]']).toEqual({
+      changesCollapsed: true,
+      graphFilterMode: 'auto',
+      graphManualRefIds: [],
+    });
+  });
 });

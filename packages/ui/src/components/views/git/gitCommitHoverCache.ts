@@ -14,6 +14,7 @@ type CacheEntry = {
 };
 
 const DEFAULT_MAX_POSITIVE_ENTRIES = 200;
+const DEFAULT_MAX_NON_POSITIVE_ENTRIES = 200;
 const DEFAULT_NEGATIVE_TTL_MS = 60_000;
 const IDLE_DETAILS_SNAPSHOT: GitCommitHoverDetailsSnapshot = Object.freeze({ status: 'idle' });
 
@@ -58,11 +59,13 @@ export function createGitCommitHoverDetailsCache(options: {
   preloadImage: (url: string) => Promise<boolean>;
   now?: () => number;
   maxPositiveEntries?: number;
+  maxNonPositiveEntries?: number;
   negativeTtlMs?: number;
 }): GitCommitHoverDetailsCache {
   const entries = new Map<string, CacheEntry>();
   const now = options.now ?? Date.now;
   const maxPositiveEntries = options.maxPositiveEntries ?? DEFAULT_MAX_POSITIVE_ENTRIES;
+  const maxNonPositiveEntries = options.maxNonPositiveEntries ?? DEFAULT_MAX_NON_POSITIVE_ENTRIES;
   const negativeTtlMs = options.negativeTtlMs ?? DEFAULT_NEGATIVE_TTL_MS;
   let disposed = false;
 
@@ -117,6 +120,30 @@ export function createGitCommitHoverDetailsCache(options: {
     }
   };
 
+  const trimNonPositiveEntries = () => {
+    let nonPositiveCount = 0;
+    for (const entry of entries.values()) {
+      if (entry.snapshot.status !== 'ready' && entry.listeners.size === 0 && !entry.inFlight) {
+        nonPositiveCount += 1;
+      }
+    }
+
+    if (nonPositiveCount <= maxNonPositiveEntries) {
+      return;
+    }
+
+    for (const [cacheKey, entry] of entries) {
+      if (nonPositiveCount <= maxNonPositiveEntries) {
+        break;
+      }
+      if (entry.snapshot.status === 'ready' || entry.listeners.size > 0 || entry.inFlight) {
+        continue;
+      }
+      entries.delete(cacheKey);
+      nonPositiveCount -= 1;
+    }
+  };
+
   const publishReady = (entry: CacheEntry, details: GitHubCommitDetails) => {
     if (disposed) {
       return;
@@ -139,6 +166,7 @@ export function createGitCommitHoverDetailsCache(options: {
     entry.snapshot = { status: 'unavailable' };
     entry.negativeExpiresAt = now() + negativeTtlMs;
     notify(entry);
+    trimNonPositiveEntries();
   };
 
   const isUnavailableExpired = (entry: CacheEntry): boolean => (
@@ -184,6 +212,8 @@ export function createGitCommitHoverDetailsCache(options: {
           publishUnavailable(entry);
         } finally {
           entry.inFlight = null;
+          trimPositiveEntries();
+          trimNonPositiveEntries();
         }
       })();
 
@@ -203,6 +233,7 @@ export function createGitCommitHoverDetailsCache(options: {
       if (isUnavailableExpired(entry)) {
         entry.snapshot = IDLE_DETAILS_SNAPSHOT;
         entry.negativeExpiresAt = null;
+        trimNonPositiveEntries();
       }
       return entry.snapshot;
     },
@@ -216,6 +247,8 @@ export function createGitCommitHoverDetailsCache(options: {
       entry.listeners.add(listener);
       return () => {
         entry.listeners.delete(listener);
+        trimPositiveEntries();
+        trimNonPositiveEntries();
       };
     },
 

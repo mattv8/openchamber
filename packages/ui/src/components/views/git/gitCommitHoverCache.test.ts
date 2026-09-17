@@ -110,6 +110,43 @@ describe('createGitCommitHoverDetailsCache', () => {
     expect(loaderCalls).toBe(2);
   });
 
+  test('bounds unprotected unavailable and idle entries while retaining subscribed and in-flight entries', async () => {
+    let resolveInFlight!: (details: GitHubCommitDetails) => void;
+    const inFlightPromise = new Promise<GitHubCommitDetails>((resolve) => {
+      resolveInFlight = resolve;
+    });
+    const loaderCalls = new Map<string, number>();
+    const subscribedKey = { ...key, hash: 's'.repeat(40) };
+    const inFlightKey = { ...key, hash: 'i'.repeat(40) };
+    const evictedKey = { ...key, hash: '0'.repeat(40) };
+    const cache = createGitCommitHoverDetailsCache({
+      load: (currentKey) => {
+        loaderCalls.set(currentKey.hash, (loaderCalls.get(currentKey.hash) ?? 0) + 1);
+        if (currentKey.hash === inFlightKey.hash) {
+          return inFlightPromise;
+        }
+        return Promise.reject(new Error('offline'));
+      },
+      preloadImage: async () => true,
+      maxNonPositiveEntries: 2,
+    });
+
+    cache.subscribe(subscribedKey, () => {});
+    const inFlightLoad = cache.preload(inFlightKey);
+    await cache.preload(evictedKey);
+    await cache.preload({ ...key, hash: '1'.repeat(40) });
+    await cache.preload({ ...key, hash: '2'.repeat(40) });
+
+    expect(cache.getSnapshot(evictedKey)).toEqual({ status: 'idle' });
+    await cache.preload(evictedKey);
+    expect(loaderCalls.get(evictedKey.hash)).toBe(2);
+    expect(cache.getSnapshot(subscribedKey)).toEqual({ status: 'idle' });
+    expect(cache.getSnapshot(inFlightKey)).toEqual({ status: 'loading' });
+
+    resolveInFlight({ connected: true });
+    await inFlightLoad;
+  });
+
   test('separates keys by directory remote and hash', async () => {
     const seen: GitCommitHoverDetailsKey[] = [];
     const cache = createGitCommitHoverDetailsCache({

@@ -833,4 +833,69 @@ describe('gitApiHttp history requests', () => {
       restoreMocks();
     }
   });
+
+  test('preserves JSON error details for commit file previews', async () => {
+    installWindowMock();
+    const request: GitCommitFilePreviewRequest = {
+      commitHash: 'a'.repeat(40),
+      parentHash: null,
+      originalPath: null,
+      modifiedPath: 'file.ts',
+    };
+    globalThis.fetch = Object.assign(
+      async () => Response.json({ error: 'The selected commit is unavailable.' }, { status: 404 }),
+      previousFetch
+    );
+
+    try {
+      await expect(getCommitFileDiff('/repo', request))
+        .rejects.toThrow('The selected commit is unavailable.');
+    } finally {
+      restoreMocks();
+    }
+  });
+
+  test('accepts ready and too-large commit file preview responses', async () => {
+    installWindowMock();
+    const request: GitCommitFilePreviewRequest = {
+      commitHash: 'a'.repeat(40),
+      parentHash: null,
+      originalPath: null,
+      modifiedPath: 'file.ts',
+    };
+    const responses = [
+      Response.json({ status: 'ready', original: 'before', modified: 'after' }),
+      Response.json({ status: 'too-large', totalBytes: 200_000, maxBytes: 100_000 }),
+    ];
+    globalThis.fetch = Object.assign(async () => responses.shift()!, previousFetch);
+
+    try {
+      expect(await getCommitFileDiff('/repo', request))
+        .toEqual({ status: 'ready', original: 'before', modified: 'after' });
+      expect(await getCommitFileDiff('/repo', request))
+        .toEqual({ status: 'too-large', totalBytes: 200_000, maxBytes: 100_000 });
+    } finally {
+      restoreMocks();
+    }
+  });
+
+  test('rejects malformed commit file preview responses', async () => {
+    installWindowMock();
+    const request: GitCommitFilePreviewRequest = {
+      commitHash: 'a'.repeat(40),
+      parentHash: null,
+      originalPath: null,
+      modifiedPath: 'file.ts',
+    };
+    globalThis.fetch = Object.assign(
+      async () => Response.json({ status: 'ready', original: 'before', modified: 1 }),
+      previousFetch
+    );
+
+    try {
+      await expect(getCommitFileDiff('/repo', request)).rejects.toThrow();
+    } finally {
+      restoreMocks();
+    }
+  });
 });
