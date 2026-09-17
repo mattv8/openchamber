@@ -3912,6 +3912,18 @@ export async function getCommitFiles(
   request: GitCommitChangesRequest
 ): Promise<{ files: GitCommitChangedFile[] }> {
   const { commitHash, parentHash } = request;
+  if (parentHash === null) {
+    const parentsResult = await execGit(['rev-list', '--parents', '-n', '1', '--end-of-options', commitHash], directory);
+    if (parentsResult.exitCode !== 0) {
+      const message = [parentsResult.stderr, parentsResult.stdout]
+        .map((value) => String(value || '').trim())
+        .find(Boolean);
+      throw new Error(message || `Failed to resolve parents for commit ${commitHash}`);
+    }
+    if (parentsResult.stdout.trim().split(/\s+/).filter(Boolean).length > 1) {
+      throw new Error(`parentHash is required for non-root commit ${commitHash}`);
+    }
+  }
   const args = parentHash
     ? ['diff-tree', '-r', '--no-commit-id', '-M', '--raw', '--numstat', '--no-abbrev', '-z', parentHash, commitHash]
     : ['diff-tree', '--root', '-r', '--no-commit-id', '-M', '--raw', '--numstat', '--no-abbrev', '-z', commitHash];
