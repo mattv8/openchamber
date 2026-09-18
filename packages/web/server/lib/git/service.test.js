@@ -2658,16 +2658,14 @@ describe.runIf(canRunGit())('getRangeDiff', () => {
     expect(diff).not.toContain('must not be in a diff');
   });
 
-  it('resolves a base that exists only on a remote other than origin', async () => {
+  it('does not replace a missing local base with a matching remote ref', async () => {
     const { repository } = createRepositoryWithRemote({ remoteName: 'upstream', defaultBranch: 'react' });
-    // The selected remote ref must work without a local branch of that name.
     fs.writeFileSync(path.join(repository, 'feature.txt'), 'work\n');
     runGit(repository, ['add', 'feature.txt']);
     runGit(repository, ['commit', '-m', 'feature']);
 
-    const diff = await getRangeDiff(repository, { base: 'react', head: 'next' });
-
-    expect(diff).toContain('feature.txt');
+    await expect(getRangeDiff(repository, { base: 'react', head: 'next' }))
+      .rejects.toThrow(/is not available locally/);
   });
 
   it('names an unfetched remote-only ref instead of failing with git\'s ambiguous argument (#2735)', async () => {
@@ -2729,7 +2727,7 @@ describeIfGit('getRangeFiles', () => {
     runGit(repository, ['add', 'added.txt', 'README.md']);
     runGit(repository, ['commit', '-m', 'changes']);
 
-    const files = await getRangeFiles(repository, { base: 'react', head: 'next' });
+    const files = await getRangeFiles(repository, { base: 'origin/react', head: 'next' });
 
     expect(files).toEqual(expect.arrayContaining([
       { path: 'added.txt', status: 'A' },
@@ -2751,7 +2749,7 @@ describeIfGit('getRangeFiles', () => {
     runGit(repository, ['add', '-A']);
     runGit(repository, ['commit', '-m', 'rename']);
 
-    const files = await getRangeFiles(repository, { base: 'react', head: 'next' });
+    const files = await getRangeFiles(repository, { base: 'origin/react', head: 'next' });
 
     const renameEntry = files.find((file) => file.status === 'R');
     expect(renameEntry).toBeDefined();
@@ -2773,7 +2771,7 @@ describeIfGit('getRangeFiles', () => {
     runGit(repository, ['add', '-A']);
     runGit(repository, ['commit', '-m', 'copy']);
 
-    const files = await getRangeFiles(repository, { base: 'react', head: 'next' });
+    const files = await getRangeFiles(repository, { base: 'origin/react', head: 'next' });
 
     const copyEntry = files.find((file) => file.status === 'C');
     expect(copyEntry).toBeDefined();

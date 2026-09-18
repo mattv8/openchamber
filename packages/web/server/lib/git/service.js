@@ -3385,36 +3385,6 @@ async function runWorkingTreeRangeDiff(context, baseRef, headRef, args, paths = 
   }
 }
 
-async function resolveRangeBaseRef(git, baseRef) {
-  let resolvedBase = baseRef;
-  if (!/[*?[\]^~:\\]/.test(baseRef)) {
-    const resolvesLocally = await git
-      .raw(['rev-parse', '--verify', `refs/heads/${baseRef}`])
-      .then((value) => Boolean(String(value || '').trim()))
-      .catch(() => false);
-
-    if (!resolvesLocally) {
-      const originCandidate = `refs/remotes/origin/${baseRef}`;
-      const originExists = await git.raw(['rev-parse', '--verify', originCandidate])
-        .then((value) => Boolean(String(value || '').trim()))
-        .catch(() => false);
-      if (originExists) {
-        resolvedBase = `origin/${baseRef}`;
-      } else {
-        const remoteMatch = await git
-          .raw(['for-each-ref', '--count=1', '--format=%(refname:short)', `refs/remotes/*/${baseRef}`])
-          .then((value) => String(value || '').trim())
-          .catch(() => '');
-        if (remoteMatch) {
-          resolvedBase = remoteMatch;
-        }
-      }
-    }
-  }
-
-  return resolvedBase;
-}
-
 export async function getRangeDiff(directory, { base, head, path: filePath, contextLines = 3, includeWorkingTree = false } = {}) {
   const { directoryPath, directoryGit, repoRoot, git } = await createRepositoryGitContext(directory);
   const baseRef = typeof base === 'string' ? base.trim() : '';
@@ -3423,8 +3393,7 @@ export async function getRangeDiff(directory, { base, head, path: filePath, cont
     throw new Error('base and head are required');
   }
 
-  const resolvedBase = await resolveRangeBaseRef(git, baseRef);
-  await assertRangeRefsResolve(git, [resolvedBase, headRef]);
+  await assertRangeRefsResolve(git, [baseRef, headRef]);
 
   const args = ['diff', '--no-color'];
   if (typeof contextLines === 'number' && !Number.isNaN(contextLines)) {
@@ -3439,7 +3408,7 @@ export async function getRangeDiff(directory, { base, head, path: filePath, cont
       if (error.code !== GIT_PATH_NOT_FOUND) throw error;
       // A committed deletion is absent from HEAD, the index, and the working
       // tree. It is still a valid range path when it exists at the merge base.
-      const mergeBase = (await git.raw(['merge-base', resolvedBase, headRef])).trim();
+      const mergeBase = (await git.raw(['merge-base', baseRef, headRef])).trim();
       for (const root of new Set([repoRoot, directoryPath])) {
         const target = path.resolve(root, filePath);
         if (!isInsideOrSameDirectory(repoRoot, target)) continue;
@@ -3454,9 +3423,9 @@ export async function getRangeDiff(directory, { base, head, path: filePath, cont
     }
   }
   if (includeWorkingTree) {
-    return runWorkingTreeRangeDiff({ git, repoRoot }, resolvedBase, headRef, args, paths);
+    return runWorkingTreeRangeDiff({ git, repoRoot }, baseRef, headRef, args, paths);
   }
-  const diff = await git.raw([...args, `${resolvedBase}...${headRef}`, '--', ...paths]);
+  const diff = await git.raw([...args, `${baseRef}...${headRef}`, '--', ...paths]);
   return diff;
 }
 
@@ -3539,16 +3508,15 @@ export async function getRangeFiles(directory, { base, head, includeWorkingTree 
     throw new Error('base and head are required');
   }
 
-  const resolvedBase = await resolveRangeBaseRef(git, baseRef);
-  await assertRangeRefsResolve(git, [resolvedBase, headRef]);
+  await assertRangeRefsResolve(git, [baseRef, headRef]);
 
   // `-C` (copy detection among changed files only, so cheap) makes copies
   // surface as C entries instead of plain additions; rename detection is on
   // by default.
   const args = ['diff', '--name-status', '-z', '-C'];
   const raw = includeWorkingTree
-    ? await runWorkingTreeRangeDiff({ git, repoRoot }, resolvedBase, headRef, args)
-    : await git.raw([...args, `${resolvedBase}...${headRef}`, '--']);
+    ? await runWorkingTreeRangeDiff({ git, repoRoot }, baseRef, headRef, args)
+    : await git.raw([...args, `${baseRef}...${headRef}`, '--']);
   // -z format: STATUS\0PATH\0[ORIG\0] repeated. For rename/copy entries
   // (`R100`, `C75`) the first path token is the ORIGINAL path and the second
   // is the DESTINATION — the diff (and the UI) must address the destination.
