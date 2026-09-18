@@ -1,6 +1,7 @@
 import { describe, expect, mock, test } from "bun:test"
 import type { FilesAPI, GitAPI, GitCommitChangedFile, GitLogResponse, GitStatus, RuntimeAPIs } from "./api/types"
-import { createGitTag, generatePullRequestDescription, getGitHistory, getGitHistoryMergeBase, getGitHistoryRefs, getGitStatus, stageGitFile, stageGitFiles, unstageGitFile, unstageGitFiles } from "./gitApi"
+import { createGitTag, decodeGitErrorMessage, generatePullRequestDescription, getGitHistory, getGitHistoryMergeBase, getGitHistoryRefs, getGitStatus, isResetHardDirtyError, stageGitFile, stageGitFiles, unstageGitFile, unstageGitFiles } from "./gitApi"
+import { GitOperationRequestError } from "./gitApiHttp"
 
 const status: GitStatus = {
   current: "main",
@@ -12,6 +13,20 @@ const status: GitStatus = {
 }
 
 const previousFetch = globalThis.fetch
+
+describe("git operation error helpers", () => {
+  test("recognizes runtime and HTTP dirty-reset errors while preserving other errors", () => {
+    const runtimeError = new Error("[reset_hard_dirty] Working tree has uncommitted changes")
+    const httpError = new GitOperationRequestError("Working tree has uncommitted changes", "reset_hard_dirty")
+    const otherError = new GitOperationRequestError("Request failed", "operation_in_progress")
+
+    expect(decodeGitErrorMessage(runtimeError, "Test fallback")).toBe("Working tree has uncommitted changes")
+    expect(decodeGitErrorMessage(null, "Test fallback")).toBe("Test fallback")
+    expect(isResetHardDirtyError(runtimeError)).toBe(true)
+    expect(isResetHardDirtyError(httpError)).toBe(true)
+    expect(isResetHardDirtyError(otherError)).toBe(false)
+  })
+})
 
 type RuntimeAPIFixture = Partial<Omit<RuntimeAPIs, "git" | "files">> & {
   git?: Partial<GitAPI>

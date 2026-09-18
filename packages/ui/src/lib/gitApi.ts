@@ -1197,6 +1197,30 @@ export async function continueMerge(directory: string): Promise<{ success: boole
   return gitHttp.continueMerge(directory);
 }
 
+export async function abortCherryPick(directory: string): Promise<{ success: boolean }> {
+  const runtime = getRuntimeGit();
+  if (runtime?.abortCherryPick) return runtimeStatusMutation(directory, runtime.abortCherryPick(directory));
+  return gitHttp.abortCherryPick(directory);
+}
+
+export async function continueCherryPick(directory: string): Promise<{ success: boolean; conflict: boolean; conflictFiles?: string[] }> {
+  const runtime = getRuntimeGit();
+  if (runtime?.continueCherryPick) return runtimeStatusMutation(directory, runtime.continueCherryPick(directory));
+  return gitHttp.continueCherryPick(directory);
+}
+
+export async function abortRevert(directory: string): Promise<{ success: boolean }> {
+  const runtime = getRuntimeGit();
+  if (runtime?.abortRevert) return runtimeStatusMutation(directory, runtime.abortRevert(directory));
+  return gitHttp.abortRevert(directory);
+}
+
+export async function continueRevert(directory: string): Promise<{ success: boolean; conflict: boolean; conflictFiles?: string[] }> {
+  const runtime = getRuntimeGit();
+  if (runtime?.continueRevert) return runtimeStatusMutation(directory, runtime.continueRevert(directory));
+  return gitHttp.continueRevert(directory);
+}
+
 export async function stash(
   directory: string,
   options?: { message?: string; includeUntracked?: boolean }
@@ -1251,4 +1275,41 @@ export async function canonicalizeWorktreeState(
     return runtime.canonicalizeWorktreeState(directory);
   }
   return gitHttp.canonicalizeWorktreeState(directory);
+}
+
+/**
+ * Decodes runtime-prefixed error codes and returns the original message.
+ * Handles: `[reset_hard_dirty]`, `[operation_in_progress]`, and other prefixes.
+ * Returns the error message with the prefix stripped.
+ */
+export function decodeGitErrorMessage(
+  err: Error | string | null | undefined,
+  fallback: string,
+): string {
+  if (err instanceof Error) {
+    const message = err.message;
+    const match = message.match(/^\[([a-z_]+)\]\s*(.*)$/);
+    return match ? match[2] || message : message;
+  }
+  if (err !== null && err !== undefined) {
+    const match = err.match(/^\[([a-z_]+)\]\s*(.*)$/);
+    return match ? match[2] || err : err;
+  }
+  return fallback;
+}
+
+/**
+ * Checks if an error represents a "reset hard dirty" condition
+ * (working tree has uncommitted changes).
+ * Detects both runtime prefix style `[reset_hard_dirty]` and HTTP response code `error.code`.
+ */
+export function isResetHardDirtyError(err: Error | string | null | undefined): boolean {
+  if (err instanceof Error) {
+    if (err.message.startsWith('[reset_hard_dirty]')) return true;
+    return err instanceof gitHttp.GitOperationRequestError && err.code === 'reset_hard_dirty';
+  }
+  if (err !== null && err !== undefined) {
+    return err.startsWith('[reset_hard_dirty]');
+  }
+  return false;
 }

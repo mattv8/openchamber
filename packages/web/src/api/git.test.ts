@@ -17,6 +17,10 @@ describe('createWebGitAPI', () => {
       getGitHistoryMergeBase: expect.any(Function),
       getCommitFiles: expect.any(Function),
       getCommitFileDiff: expect.any(Function),
+      abortCherryPick: expect.any(Function),
+      continueCherryPick: expect.any(Function),
+      abortRevert: expect.any(Function),
+      continueRevert: expect.any(Function),
     }));
   });
 });

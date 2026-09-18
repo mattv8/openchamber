@@ -524,6 +524,67 @@ const resolveGitInternalPath = async (repoRoot, git, gitPath) => {
   return path.resolve(repoRoot, resolved.trim());
 };
 
+const isSafeGitRef = (value) =>
+  Object.prototype.toString.call(value) === '[object String]' &&
+  value.length > 0 &&
+  value.length <= 512 &&
+  !value.startsWith('-') &&
+  !/[\s\0~^:?*\[\\]/.test(value) &&
+  !value.includes('..');
+
+const hasGitStateMarker = async (repoRoot, git, marker) => {
+  const markerPath = await resolveGitInternalPath(repoRoot, git, marker).catch(() => '');
+  return markerPath ? fsp.stat(markerPath).then(() => true).catch(() => false) : false;
+};
+
+const getOperationInProgress = async (repoRoot, git) => {
+  for (const [operation, markers] of [
+    ['merge', ['MERGE_HEAD']],
+    ['rebase', ['rebase-merge', 'rebase-apply']],
+    ['cherry-pick', ['CHERRY_PICK_HEAD']],
+    ['revert', ['REVERT_HEAD']],
+  ]) {
+    if ((await Promise.all(markers.map((marker) => hasGitStateMarker(repoRoot, git, marker)))).some(Boolean)) {
+      return operation;
+    }
+  }
+  return null;
+};
+
+const assertNoOperationInProgress = async (repoRoot, git) => {
+  const operation = await getOperationInProgress(repoRoot, git);
+  if (operation) {
+    throw Object.assign(new Error(`Cannot start Git operation: ${operation} is already in progress`), {
+      code: 'operation_in_progress',
+    });
+  }
+};
+
+const getGitOperationFailureProbe = async (repoRoot, git, markers) => {
+  const [markerPresent, status] = await Promise.all([
+    Promise.all(markers.map((marker) => hasGitStateMarker(repoRoot, git, marker))).then((present) => present.some(Boolean)),
+    git.status().catch(() => ({ conflicted: [] })),
+  ]);
+  return { markerPresent, conflictFiles: status.conflicted || [] };
+};
+
+export const classifyGitOperationFailure = ({ error, probe }) => {
+  const errorMessage = String(error?.message || error || '').toLowerCase();
+  const hasConflictMessage =
+    errorMessage.includes('conflict') ||
+    errorMessage.includes('patch does not apply') ||
+    errorMessage.includes('revert failed') ||
+    errorMessage.includes('could not apply') ||
+    errorMessage.includes('automatic merge failed') ||
+    errorMessage.includes('needs merge') ||
+    errorMessage.includes('unmerged') ||
+    errorMessage.includes('fix conflicts');
+  if (hasConflictMessage || (probe.markerPresent && probe.conflictFiles.length > 0)) {
+    return { success: false, conflict: true, conflictFiles: probe.conflictFiles };
+  }
+  throw error;
+};
+
 const GITLINK_MODE = '160000';
 
 // Paths from `git status` can stop resolving: the file was removed after the
@@ -3004,6 +3065,8 @@ async function readStatus(normalizedDirectory, lightMode) {
     // Check for in-progress operations
     let mergeInProgress = null;
     let rebaseInProgress = null;
+    let cherryPickInProgress = null;
+    let revertInProgress = null;
 
     try {
       // Check MERGE_HEAD for merge in progress
@@ -3027,6 +3090,22 @@ async function readStatus(normalizedDirectory, lightMode) {
       }
     } catch {
       // ignore
+    }
+
+    for (const [marker, key] of [
+      ['CHERRY_PICK_HEAD', 'cherryPickInProgress'],
+      ['REVERT_HEAD', 'revertInProgress'],
+    ]) {
+      try {
+        const markerPath = await resolveGitInternalPath(repoRoot, git, marker);
+        const head = (await fsp.readFile(markerPath, 'utf8')).trim();
+        if (head) {
+          if (key === 'cherryPickInProgress') cherryPickInProgress = { head };
+          else revertInProgress = { head };
+        }
+      } catch {
+        // ignore absent operation markers
+      }
     }
 
     try {
@@ -3071,6 +3150,8 @@ async function readStatus(normalizedDirectory, lightMode) {
       diffStats: lightMode ? undefined : diffStats,
       mergeInProgress,
       rebaseInProgress,
+      cherryPickInProgress,
+      revertInProgress,
     };
   } catch (error) {
     if (isNotGitRepositoryError(error) || isMissingDirectoryError(error)) {
@@ -4851,10 +4932,14 @@ async function filterActiveRemoteBranches(git, remoteBranches) {
 }
 
 export async function createBranch(directory, branchName, options = {}) {
+  const startPoint = options.startPoint || 'HEAD';
+  if (!isSafeGitRef(branchName) || !isSafeGitRef(startPoint)) {
+    throw new Error('Invalid ref');
+  }
   const { git } = await createRepositoryGitContext(directory);
 
   try {
-    await git.checkoutBranch(branchName, options.startPoint || 'HEAD');
+    await git.checkoutBranch(branchName, startPoint);
     return { success: true, branch: branchName };
   } catch (error) {
     console.error('Failed to create branch:', error);
@@ -4978,27 +5063,21 @@ export async function cherryPick(directory, hash) {
   if (!isValidCommitHash(hash)) {
     throw new Error('Invalid commit hash');
   }
-  const { git } = await createRepositoryGitContext(directory);
+  const { repoRoot, git } = await createRepositoryGitContext(directory);
+  await assertNoOperationInProgress(repoRoot, git);
   try {
     await git.raw(['cherry-pick', hash]);
     return { success: true, conflict: false };
   } catch (error) {
-    const errorMessage = String(error?.message || error || '').toLowerCase();
-    const isConflict =
-      errorMessage.includes('conflict') ||
-      errorMessage.includes('patch does not apply');
-
-    if (isConflict) {
-      const status = await git.status().catch(() => ({ conflicted: [] }));
-      return {
-        success: false,
-        conflict: true,
-        conflictFiles: status.conflicted || [],
-      };
+    try {
+      return classifyGitOperationFailure({
+        error,
+        probe: await getGitOperationFailureProbe(repoRoot, git, ['CHERRY_PICK_HEAD']),
+      });
+    } catch {
+      console.error('Failed to cherry-pick:', error);
+      throw error;
     }
-
-    console.error('Failed to cherry-pick:', error);
-    throw error;
   }
 }
 
@@ -5006,27 +5085,21 @@ export async function revertCommit(directory, hash) {
   if (!isValidCommitHash(hash)) {
     throw new Error('Invalid commit hash');
   }
-  const { git } = await createRepositoryGitContext(directory);
+  const { repoRoot, git } = await createRepositoryGitContext(directory);
+  await assertNoOperationInProgress(repoRoot, git);
   try {
     await git.raw(['revert', '--no-commit', hash]);
     return { success: true, conflict: false };
   } catch (error) {
-    const errorMessage = String(error?.message || error || '').toLowerCase();
-    const isConflict =
-      errorMessage.includes('conflict') ||
-      errorMessage.includes('revert failed');
-
-    if (isConflict) {
-      const status = await git.status().catch(() => ({ conflicted: [] }));
-      return {
-        success: false,
-        conflict: true,
-        conflictFiles: status.conflicted || [],
-      };
+    try {
+      return classifyGitOperationFailure({
+        error,
+        probe: await getGitOperationFailureProbe(repoRoot, git, ['REVERT_HEAD']),
+      });
+    } catch {
+      console.error('Failed to revert commit:', error);
+      throw error;
     }
-
-    console.error('Failed to revert commit:', error);
-    throw error;
   }
 }
 
@@ -5040,7 +5113,9 @@ export async function resetToCommit(directory, hash, mode, force = false) {
     const status = await git.status();
     const isDirty = !status.isClean();
     if (isDirty) {
-      throw new Error('Cannot hard reset: uncommitted changes in working tree. Stash or commit first, or use force.');
+      throw Object.assign(new Error('Cannot hard reset: uncommitted changes in working tree. Stash or commit first, or use force.'), {
+        code: 'reset_hard_dirty',
+      });
     }
   }
 
@@ -6294,14 +6369,17 @@ export async function removeRemote(directory, options = {}) {
 }
 
 export async function rebase(directory, options = {}) {
-  const { git } = await createRepositoryGitContext(directory);
+  const { onto } = options;
+  if (!onto) {
+    throw new Error('onto parameter is required for rebase');
+  }
+  if (!isSafeGitRef(onto)) {
+    throw new Error('Invalid ref');
+  }
+  const { repoRoot, git } = await createRepositoryGitContext(directory);
+  await assertNoOperationInProgress(repoRoot, git);
 
   try {
-    const { onto } = options;
-    if (!onto) {
-      throw new Error('onto parameter is required for rebase');
-    }
-
     await git.rebase([onto]);
 
     return {
@@ -6309,23 +6387,15 @@ export async function rebase(directory, options = {}) {
       conflict: false
     };
   } catch (error) {
-    const errorMessage = String(error?.message || error || '').toLowerCase();
-    const isConflict = errorMessage.includes('conflict') || 
-                       errorMessage.includes('could not apply') ||
-                       errorMessage.includes('merge conflict');
-
-    if (isConflict) {
-      // Get list of conflicted files
-      const status = await git.status().catch(() => ({ conflicted: [] }));
-      return {
-        success: false,
-        conflict: true,
-        conflictFiles: status.conflicted || []
-      };
+    try {
+      return classifyGitOperationFailure({
+        error,
+        probe: await getGitOperationFailureProbe(repoRoot, git, ['rebase-merge', 'rebase-apply']),
+      });
+    } catch {
+      console.error('Failed to rebase:', error);
+      throw error;
     }
-
-    console.error('Failed to rebase:', error);
-    throw error;
   }
 }
 
@@ -6342,14 +6412,17 @@ export async function abortRebase(directory) {
 }
 
 export async function merge(directory, options = {}) {
-  const { git } = await createRepositoryGitContext(directory);
+  const { branch } = options;
+  if (!branch) {
+    throw new Error('branch parameter is required for merge');
+  }
+  if (!isSafeGitRef(branch)) {
+    throw new Error('Invalid ref');
+  }
+  const { repoRoot, git } = await createRepositoryGitContext(directory);
+  await assertNoOperationInProgress(repoRoot, git);
 
   try {
-    const { branch } = options;
-    if (!branch) {
-      throw new Error('branch parameter is required for merge');
-    }
-
     await git.merge([branch]);
 
     return {
@@ -6357,23 +6430,15 @@ export async function merge(directory, options = {}) {
       conflict: false
     };
   } catch (error) {
-    const errorMessage = String(error?.message || error || '').toLowerCase();
-    const isConflict = errorMessage.includes('conflict') || 
-                       errorMessage.includes('merge conflict') ||
-                       errorMessage.includes('automatic merge failed');
-
-    if (isConflict) {
-      // Get list of conflicted files
-      const status = await git.status().catch(() => ({ conflicted: [] }));
-      return {
-        success: false,
-        conflict: true,
-        conflictFiles: status.conflicted || []
-      };
+    try {
+      return classifyGitOperationFailure({
+        error,
+        probe: await getGitOperationFailureProbe(repoRoot, git, ['MERGE_HEAD']),
+      });
+    } catch {
+      console.error('Failed to merge:', error);
+      throw error;
     }
-
-    console.error('Failed to merge:', error);
-    throw error;
   }
 }
 
@@ -6390,7 +6455,7 @@ export async function abortMerge(directory) {
 }
 
 export async function continueRebase(directory) {
-  const { git } = await createRepositoryGitContext(directory);
+  const { repoRoot, git } = await createRepositoryGitContext(directory);
 
   try {
     // Set GIT_EDITOR to prevent editor prompts
@@ -6398,18 +6463,13 @@ export async function continueRebase(directory) {
     return { success: true, conflict: false };
   } catch (error) {
     const errorMessage = String(error?.message || error || '').toLowerCase();
-    const isConflict = errorMessage.includes('conflict') || 
-                       errorMessage.includes('needs merge') ||
-                       errorMessage.includes('unmerged') ||
-                       errorMessage.includes('fix conflicts');
-
-    if (isConflict) {
-      const status = await git.status().catch(() => ({ conflicted: [] }));
-      return {
-        success: false,
-        conflict: true,
-        conflictFiles: status.conflicted || []
-      };
+    try {
+      return classifyGitOperationFailure({
+        error,
+        probe: await getGitOperationFailureProbe(repoRoot, git, ['rebase-merge', 'rebase-apply']),
+      });
+    } catch {
+      // Continue to the existing no-op handling below.
     }
 
     // Check for "nothing to commit" which means rebase step is complete
@@ -6430,7 +6490,7 @@ export async function continueRebase(directory) {
 }
 
 export async function continueMerge(directory) {
-  const { git } = await createRepositoryGitContext(directory);
+  const { repoRoot, git } = await createRepositoryGitContext(directory);
 
   try {
     // Check if there are still unmerged files
@@ -6449,18 +6509,13 @@ export async function continueMerge(directory) {
     return { success: true, conflict: false };
   } catch (error) {
     const errorMessage = String(error?.message || error || '').toLowerCase();
-    const isConflict = errorMessage.includes('conflict') || 
-                       errorMessage.includes('needs merge') ||
-                       errorMessage.includes('unmerged') ||
-                       errorMessage.includes('fix conflicts');
-
-    if (isConflict) {
-      const status = await git.status().catch(() => ({ conflicted: [] }));
-      return {
-        success: false,
-        conflict: true,
-        conflictFiles: status.conflicted || []
-      };
+    try {
+      return classifyGitOperationFailure({
+        error,
+        probe: await getGitOperationFailureProbe(repoRoot, git, ['MERGE_HEAD']),
+      });
+    } catch {
+      // Continue to the existing no-op handling below.
     }
 
     // "nothing to commit" can happen if all conflicts resolved to one side
@@ -6471,6 +6526,44 @@ export async function continueMerge(directory) {
 
     console.error('Failed to continue merge:', error);
     throw error;
+  }
+}
+
+export async function abortCherryPick(directory) {
+  const { git } = await createRepositoryGitContext(directory);
+  await git.raw(['cherry-pick', '--abort']);
+  return { success: true };
+}
+
+export async function continueCherryPick(directory) {
+  const { repoRoot, git } = await createRepositoryGitContext(directory);
+  try {
+    await runGitCommandOrThrow(repoRoot, ['-c', 'core.editor=true', 'cherry-pick', '--continue'], 'Failed to continue cherry-pick');
+    return { success: true, conflict: false };
+  } catch (error) {
+    return classifyGitOperationFailure({
+      error,
+      probe: await getGitOperationFailureProbe(repoRoot, git, ['CHERRY_PICK_HEAD']),
+    });
+  }
+}
+
+export async function abortRevert(directory) {
+  const { git } = await createRepositoryGitContext(directory);
+  await git.raw(['revert', '--abort']);
+  return { success: true };
+}
+
+export async function continueRevert(directory) {
+  const { repoRoot, git } = await createRepositoryGitContext(directory);
+  try {
+    await runGitCommandOrThrow(repoRoot, ['-c', 'core.editor=true', 'revert', '--continue'], 'Failed to continue revert');
+    return { success: true, conflict: false };
+  } catch (error) {
+    return classifyGitOperationFailure({
+      error,
+      probe: await getGitOperationFailureProbe(repoRoot, git, ['REVERT_HEAD']),
+    });
   }
 }
 

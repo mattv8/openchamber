@@ -1,13 +1,17 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  abortCherryPick,
   abortMerge,
   abortRebase,
+  abortRevert,
   applyGitStash,
   checkoutBranch,
   checkoutCommit,
   cherryPick,
+  continueCherryPick,
   continueMerge,
   continueRebase,
+  continueRevert,
   createBranch,
   createGitTag,
   deleteGitBranch,
@@ -546,6 +550,10 @@ describe('gitApiHttp post-mutation status invalidation (#2281)', () => {
       await expectStatusInvalidatedBy('/repo-2281-rebase', () => rebase('/repo-2281-rebase', { onto: 'main' }));
       await expectStatusInvalidatedBy('/repo-2281-rebase-abort', () => abortRebase('/repo-2281-rebase-abort'));
       await expectStatusInvalidatedBy('/repo-2281-rebase-continue', () => continueRebase('/repo-2281-rebase-continue'));
+      await expectStatusInvalidatedBy('/repo-2281-cherry-pick-abort', () => abortCherryPick('/repo-2281-cherry-pick-abort'));
+      await expectStatusInvalidatedBy('/repo-2281-cherry-pick-continue', () => continueCherryPick('/repo-2281-cherry-pick-continue'));
+      await expectStatusInvalidatedBy('/repo-2281-revert-abort', () => abortRevert('/repo-2281-revert-abort'));
+      await expectStatusInvalidatedBy('/repo-2281-revert-continue', () => continueRevert('/repo-2281-revert-continue'));
     } finally {
       restoreMocks();
     }

@@ -117,16 +117,50 @@ const menuItemRegistry: Array<MockMenuItemProps & { text: string }> = [];
 const toastMessages = { success: [] as string[], error: [] as string[] };
 const copiedTexts: string[] = [];
 const openedUrls: string[] = [];
+type ResetMode = 'soft' | 'mixed' | 'hard';
+type CherryPickResult = { conflict: boolean; conflictFiles?: string[] };
+const checkoutCommitCalls: Array<[string, string]> = [];
+const cherryPickCalls: Array<[string, string]> = [];
+const resetToCommitCalls: Array<[string, string, ResetMode, boolean | undefined]> = [];
+let resetToCommitErrors: Error[] = [];
+let createBranchErrors: Error[] = [];
+let cherryPickErrors: Error[] = [];
+let cherryPickResults: CherryPickResult[] = [];
 
 const gitApi = {
-  checkoutCommit: mock(async () => ({ success: true })),
-  createBranch: mock(async (_directory: string, name: string) => ({ success: true, branch: name })),
+  checkoutCommit: mock(async (directory: string, hash: string) => {
+    checkoutCommitCalls.push([directory, hash]);
+    return { success: true };
+  }),
+  createBranch: mock(async (_directory: string, name: string) => {
+    const error = createBranchErrors.shift();
+    if (error) throw error;
+    return { success: true, branch: name };
+  }),
   createGitTag: mock(async (_directory: string, name: string) => ({ success: true, tag: name })),
-  cherryPick: mock(async () => ({ conflict: false as const })),
+  cherryPick: mock(async (directory: string, hash: string): Promise<CherryPickResult> => {
+    cherryPickCalls.push([directory, hash]);
+    const error = cherryPickErrors.shift();
+    if (error) throw error;
+    return cherryPickResults.shift() ?? { conflict: false };
+  }),
   revertCommit: mock(async () => ({ conflict: false as const })),
-  resetToCommit: mock(async () => ({ success: true })),
+  resetToCommit: mock(async (directory: string, hash: string, mode: ResetMode, force?: boolean) => {
+    resetToCommitCalls.push([directory, hash, mode, force]);
+    const error = resetToCommitErrors.shift();
+    if (error) throw error;
+    return { success: true };
+  }),
   merge: mock(async () => ({ conflict: false as const })),
   rebase: mock(async () => ({ conflict: false as const })),
+  decodeGitErrorMessage: (err: Error | string | null | undefined): string => {
+    const message = err instanceof Error ? err.message : err;
+    return message?.replace(/^\[[a-z_]+\]\s*/, '') ?? 'Unknown error';
+  },
+  isResetHardDirtyError: (err: Error | string | null | undefined): boolean => {
+    const message = err instanceof Error ? err.message : err;
+    return message?.startsWith('[reset_hard_dirty]') ?? false;
+  },
 };
 
 let clipboardResult: { ok: boolean; error?: string } = { ok: true };
@@ -418,12 +452,13 @@ const resetRegistries = () => {
   openedUrls.length = 0;
   clipboardResult = { ok: true };
   runtimeGitCapabilities = {};
-  Object.values(gitApi).forEach((fn) => {
-    if ('mock' in fn) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (fn as any).mockClear();
-    }
-  });
+  checkoutCommitCalls.length = 0;
+  cherryPickCalls.length = 0;
+  resetToCommitCalls.length = 0;
+  resetToCommitErrors = [];
+  createBranchErrors = [];
+  cherryPickErrors = [];
+  cherryPickResults = [];
 };
 
 const renderInteractive = async (element: React.ReactElement) => {
@@ -691,18 +726,14 @@ describe('HistoryCommitRow context menu regression', () => {
     await invokeClick(getMenuItem('Cherry-pick')?.onClick);
     await invokeClick(getButton('Confirm')?.onClick);
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (expect(gitApi.cherryPick) as any).toHaveBeenCalledWith('/repo', 'abcdef1234567890');
+    expect(cherryPickCalls).toEqual([['/repo', 'abcdef1234567890']]);
     expect(successCalls).toEqual([1]);
 
     await rendered.unmount();
   });
 
   test('keeps the create branch dialog open when branch creation fails', async () => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (gitApi.createBranch as any).mockImplementationOnce(async () => {
-      throw new Error('Branch failed');
-    });
+    createBranchErrors = [new Error('Branch failed')];
 
     const rendered = await renderInteractive(
       <ul>
@@ -1318,23 +1349,285 @@ describe('HistoryCommitRow badge behavior coverage', () => {
       });
     }
 
-    test(`${layout}: preserves HEAD, upstream, local ordering and groups adjacent remotes with a count`, () => {
-      const fork: GitHistoryGraphRef = { ...upstream, id: 'refs/remotes/fork/beta', name: 'fork/beta' };
-      const badges = renderBadges([head, upstream, fork, local, tag], compactGraph);
-      expect(badges.map((badge) => badge.getAttribute('data-git-ref-badge') ?? badge.getAttribute('data-git-ref-badge-group'))).toEqual([
-        head.id, upstream.id, local.id,
-      ]);
-      expect(badges.map((badge) => badge.querySelector('[data-icon]')?.getAttribute('data-icon'))).toEqual([
-        'target', 'cloud', 'git-branch',
-      ]);
-      const [primary, remotes, followups] = badges;
-      expect(primary.textContent).toBe(head.name);
-      expect(remotes.querySelector('[aria-hidden="true"]')?.textContent).toBe('2');
-      expect(remotes.querySelector('.sr-only')?.textContent).toBe('origin/beta, fork/beta');
-      expect(remotes.textContent).toBe('2origin/beta, fork/beta');
-      expect(followups.querySelector('.sr-only')?.textContent).toBe(local.name);
-      expect(followups.textContent).toBe(local.name);
-      expect(followups.querySelector('[aria-hidden]')).toBeNull();
+     test(`${layout}: preserves HEAD, upstream, local ordering and groups adjacent remotes with a count`, () => {
+       const fork: GitHistoryGraphRef = { ...upstream, id: 'refs/remotes/fork/beta', name: 'fork/beta' };
+       const badges = renderBadges([head, upstream, fork, local, tag], compactGraph);
+       expect(badges.map((badge) => badge.getAttribute('data-git-ref-badge') ?? badge.getAttribute('data-git-ref-badge-group'))).toEqual([
+         head.id, upstream.id, local.id,
+       ]);
+       expect(badges.map((badge) => badge.querySelector('[data-icon]')?.getAttribute('data-icon'))).toEqual([
+         'target', 'cloud', 'git-branch',
+       ]);
+       const [primary, remotes, followups] = badges;
+       expect(primary.textContent).toBe(head.name);
+       expect(remotes.querySelector('[aria-hidden="true"]')?.textContent).toBe('2');
+       expect(remotes.querySelector('.sr-only')?.textContent).toBe('origin/beta, fork/beta');
+       expect(remotes.textContent).toBe('2origin/beta, fork/beta');
+       expect(followups.querySelector('.sr-only')?.textContent).toBe(local.name);
+       expect(followups.textContent).toBe(local.name);
+       expect(followups.querySelector('[aria-hidden]')).toBeNull();
+     });
+   }
+});
+
+describe('HistoryCommitRow onConflict callback', () => {
+  test('calls onConflict with cherry-pick result when conflict occurs', async () => {
+    const conflictCalls: Array<{ operation: string; conflict: boolean; conflictFiles?: string[] }> = [];
+    cherryPickResults = [{ conflict: true, conflictFiles: ['f.ts'] }];
+
+    const rendered = await renderInteractive(
+      <ul>
+        <HistoryCommitRow
+          entry={{
+            id: 'abcdef1234567890',
+            parentIds: ['fedcba0987654321'],
+            subject: 'Test cherry-pick',
+            message: 'Test cherry-pick',
+            author: 'Test Author',
+            authorEmail: 'test@example.com',
+            timestamp: '2024-01-02T03:04:00.000Z',
+            statistics: { files: 0, insertions: 0, deletions: 0 },
+            references: [],
+          }}
+          mode="graph"
+          isExpanded={false}
+          onToggle={() => {}}
+          files={[]}
+          isLoadingFiles={false}
+          onCopyHash={() => {}}
+          directory="/repo"
+          onConflict={(result) => conflictCalls.push(result)}
+        />
+      </ul>,
+    );
+
+    await invokeClick(getMenuItem('Cherry-pick')?.onClick);
+    await invokeClick(getButton('Confirm')?.onClick);
+
+    expect(conflictCalls).toEqual([
+      { operation: 'cherry-pick', conflict: true, conflictFiles: ['f.ts'] },
+    ]);
+
+    await rendered.unmount();
+  });
+
+  test('does not throw when onConflict is undefined', async () => {
+    cherryPickResults = [{ conflict: true, conflictFiles: ['f.ts'] }];
+
+    const rendered = await renderInteractive(
+      <ul>
+        <HistoryCommitRow
+          entry={{
+            id: 'abcdef1234567890',
+            parentIds: ['fedcba0987654321'],
+            subject: 'Test cherry-pick',
+            message: 'Test cherry-pick',
+            author: 'Test Author',
+            authorEmail: 'test@example.com',
+            timestamp: '2024-01-02T03:04:00.000Z',
+            statistics: { files: 0, insertions: 0, deletions: 0 },
+            references: [],
+          }}
+          mode="graph"
+          isExpanded={false}
+          onToggle={() => {}}
+          files={[]}
+          isLoadingFiles={false}
+          onCopyHash={() => {}}
+          directory="/repo"
+        />
+      </ul>,
+    );
+
+    await invokeClick(getMenuItem('Cherry-pick')?.onClick);
+    await invokeClick(getButton('Confirm')?.onClick);
+
+    // Should not throw
+    expect(true).toBe(true);
+
+    await rendered.unmount();
+  });
+});
+
+describe('HistoryCommitRow actionsBusy prop', () => {
+  test('when actionsBusy is true, handlers guard against execution', async () => {
+    // When actionsBusy is true, any handler should return early without setting actionLoading
+
+    const rendered = await renderInteractive(
+      <ul>
+        <HistoryCommitRow
+          entry={{
+            id: 'abcdef1234567890',
+            parentIds: ['fedcba0987654321'],
+            subject: 'Test commit',
+            message: 'Test commit',
+            author: 'Test Author',
+            authorEmail: 'test@example.com',
+            timestamp: '2024-01-02T03:04:00.000Z',
+            statistics: { files: 0, insertions: 0, deletions: 0 },
+            references: [],
+          }}
+          mode="graph"
+          isExpanded={false}
+          onToggle={() => {}}
+          files={[]}
+          isLoadingFiles={false}
+          onCopyHash={() => {}}
+          directory="/repo"
+          actionsBusy={true}
+        />
+      </ul>,
+    );
+
+    // Try to invoke checkout; it should not call git API because actionsBusy is true
+    await invokeClick(getMenuItem('Checkout detached')?.onClick);
+
+    // Should not have called the git API
+    expect(checkoutCommitCalls).toEqual([]);
+
+    await rendered.unmount();
+  });
+
+  test('onActionsBusyChange callback is invoked when handler starts and completes', async () => {
+    const busyChanges: boolean[] = [];
+    const rendered = await renderInteractive(
+      <ul>
+        <HistoryCommitRow
+          entry={{
+            id: 'abcdef1234567890',
+            parentIds: ['fedcba0987654321'],
+            subject: 'Test cherry-pick',
+            message: 'Test cherry-pick',
+            author: 'Test Author',
+            authorEmail: 'test@example.com',
+            timestamp: '2024-01-02T03:04:00.000Z',
+            statistics: { files: 0, insertions: 0, deletions: 0 },
+            references: [],
+          }}
+          mode="graph"
+          isExpanded={false}
+          onToggle={() => {}}
+          files={[]}
+          isLoadingFiles={false}
+          onCopyHash={() => {}}
+          directory="/repo"
+          onActionsBusyChange={(busy) => busyChanges.push(busy)}
+        />
+      </ul>,
+    );
+
+    await invokeClick(getMenuItem('Cherry-pick')?.onClick);
+    await invokeClick(getButton('Confirm')?.onClick);
+
+    // Should have called onActionsBusyChange(true) at start and onActionsBusyChange(false) in finally
+    expect(busyChanges).toContain(true);
+    expect(busyChanges.at(-1)).toBe(false);
+
+    await rendered.unmount();
+  });
+});
+
+describe('HistoryCommitRow error decoding', () => {
+  beforeEach(() => {
+    resetRegistries();
+  });
+
+  test('[reset_hard_dirty] error shows force confirmation dialog instead of toast', async () => {
+    resetToCommitErrors = [new Error('[reset_hard_dirty] Working tree has uncommitted changes')];
+
+    const rendered = await renderInteractive(
+      <ul>
+        <HistoryCommitRow
+          entry={{
+            id: 'abcdef1234567890',
+            parentIds: ['fedcba0987654321'],
+            subject: 'Test reset',
+            message: 'Test reset',
+            author: 'Test Author',
+            authorEmail: 'test@example.com',
+            timestamp: '2024-01-02T03:04:00.000Z',
+            statistics: { files: 0, insertions: 0, deletions: 0 },
+            references: [],
+          }}
+          mode="graph"
+          isExpanded={false}
+          onToggle={() => {}}
+          files={[]}
+          isLoadingFiles={false}
+          onCopyHash={() => {}}
+          directory="/repo"
+        />
+      </ul>,
+    );
+
+    toastMessages.error.length = 0;
+    await invokeClick(getMenuItem('Reset (Hard)')?.onClick);
+    const initialResetButton = getButton('Discard changes');
+    expect(initialResetButton).toBeDefined();
+    await invokeClick(initialResetButton?.onClick);
+    await act(async () => {
+      await flush();
+      await flush();
     });
-  }
+
+    expect(resetToCommitCalls).toEqual([
+      ['/repo', 'abcdef1234567890', 'hard', false],
+    ]);
+
+    const forceResetButton = getButton('Discard and reset');
+    expect(forceResetButton).toBeDefined();
+    await invokeClick(forceResetButton?.onClick);
+    await act(async () => {
+      await flush();
+      await flush();
+    });
+
+    expect(resetToCommitCalls).toEqual([
+      ['/repo', 'abcdef1234567890', 'hard', false],
+      ['/repo', 'abcdef1234567890', 'hard', true],
+    ]);
+    expect(toastMessages.error.length).toBe(0);
+
+    await rendered.unmount();
+  });
+
+  test('[operation_in_progress] error is decoded and shown in toast without prefix', async () => {
+    cherryPickErrors = [new Error('[operation_in_progress] Another git operation is in progress')];
+
+    const rendered = await renderInteractive(
+      <ul>
+        <HistoryCommitRow
+          entry={{
+            id: 'abcdef1234567890',
+            parentIds: ['fedcba0987654321'],
+            subject: 'Test cherry-pick',
+            message: 'Test cherry-pick',
+            author: 'Test Author',
+            authorEmail: 'test@example.com',
+            timestamp: '2024-01-02T03:04:00.000Z',
+            statistics: { files: 0, insertions: 0, deletions: 0 },
+            references: [],
+          }}
+          mode="graph"
+          isExpanded={false}
+          onToggle={() => {}}
+          files={[]}
+          isLoadingFiles={false}
+          onCopyHash={() => {}}
+          directory="/repo"
+        />
+      </ul>,
+    );
+
+    toastMessages.error.length = 0;
+    await invokeClick(getMenuItem('Cherry-pick')?.onClick);
+    await invokeClick(getButton('Confirm')?.onClick);
+
+    // Toast should show decoded message (no [operation_in_progress] prefix)
+    expect(toastMessages.error.length).toBe(1);
+    expect(toastMessages.error[0]).toBe('Another git operation is in progress');
+    expect(toastMessages.error[0]).not.toContain('[operation_in_progress]');
+
+    await rendered.unmount();
+  });
 });

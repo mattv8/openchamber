@@ -15,7 +15,45 @@ const getRemoteUrl = (remote: GitRemote): string | null => {
   return pushUrl.length > 0 ? pushUrl : null;
 };
 
+const matchGitHubUrl = (url: string | null | undefined): RegExpMatchArray | null => {
+  if (!url) return null;
+  const trimmed = url.trim();
+  if (trimmed.length === 0) return null;
+  return trimmed.match(GITHUB_HTTPS_RE)
+    ?? trimmed.match(GITHUB_SSH_RE)
+    ?? trimmed.match(GITHUB_SSH_SCHEME_RE);
+};
+
 export function selectGitCommitHoverRemote(remotes: GitRemote[]): { name: string; url: string } | null {
+  // First pass: look for origin remote
+  let originRemote: GitRemote | undefined;
+  let topGitHubRemote: GitRemote | undefined;
+
+  for (const remote of remotes) {
+    const url = getRemoteUrl(remote);
+    if (!url) continue;
+
+    if (remote.name === 'origin') {
+      originRemote = remote;
+      if (matchGitHubUrl(url)) {
+        // Origin is GitHub, it's the winner
+        return { name: remote.name, url };
+      }
+    } else if (!topGitHubRemote && matchGitHubUrl(url)) {
+      // Track first non-origin GitHub remote as backup
+      topGitHubRemote = remote;
+    }
+  }
+
+  // If origin exists but isn't GitHub, prefer a GitHub remote over it
+  if (originRemote && topGitHubRemote) {
+    const topGitHubUrl = getRemoteUrl(topGitHubRemote);
+    if (topGitHubUrl) {
+      return { name: topGitHubRemote.name, url: topGitHubUrl };
+    }
+  }
+
+  // Fall back to origin if it has a URL, or top GitHub, or first remote with URL
   const ranked = [...remotes].sort((left, right) => {
     if (left.name === 'origin' && right.name !== 'origin') {
       return -1;
@@ -41,14 +79,7 @@ export function buildGitHubCommitUrl(remoteUrl: string | null | undefined, hash:
     return null;
   }
 
-  const trimmed = remoteUrl.trim();
-  if (trimmed.length === 0) {
-    return null;
-  }
-
-  const match = trimmed.match(GITHUB_HTTPS_RE)
-    ?? trimmed.match(GITHUB_SSH_RE)
-    ?? trimmed.match(GITHUB_SSH_SCHEME_RE);
+  const match = matchGitHubUrl(remoteUrl);
 
   if (!match) {
     return null;

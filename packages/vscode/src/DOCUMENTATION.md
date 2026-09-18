@@ -36,6 +36,8 @@ Keep `bridge.ts` as a thin orchestration layer that delegates message handling t
 
 - `gitService.ts`
   - Owns VS Code Git and worktree operations.
+  - Resolves in-progress Git markers through `git rev-parse --git-path`, so merge, rebase, cherry-pick, and revert state works in linked worktrees. Status adds `cherryPickInProgress` and `revertInProgress` when their marker files contain a head SHA.
+  - Handles cherry-pick and revert recovery through `api:git/cherry-pick/abort`, `api:git/cherry-pick/continue`, `api:git/revert/abort`, and `api:git/revert/continue`. Continue responses keep the merge/rebase shape: `{ success, conflict, conflictFiles? }`.
   - `api:git/diff` and `api:git/file-diff` classify the status path first through `gitPathDiff.ts`, matching the web server's diff routes. The host answers `{ kind: 'diff' | 'file-diff', ..., submodule }` or `{ kind: 'unavailable', reason: 'path_not_found' | 'nested_repository', message }`, and `webview/api/git.ts` parses that into the shared contract, throwing `GitPathUnavailableError` for unavailable paths. A failing `git diff` rejects instead of returning an empty patch. These handlers are currently dead bridge surface (see below), so the contract is covered by `gitPathDiff.test.ts` and `webview/api/git.test.ts` rather than by a reachable screen.
   - Fetches the current tracked source branch once before worktree creation. Fetch failure falls back to the local branch and reports it to the shared UI.
   - Legacy Git history parsing uses control-character field and statistics delimiters so multiline commit bodies survive in shared `GitLogEntry` results.
@@ -211,7 +213,7 @@ Handlers with no reachable caller in the VS Code webview.
 | `api:git/ignore-openchamber` | No reference anywhere in `packages/vscode/webview` |
 | `api:git/commit`, `api:git/commit-files`, `api:git/commit-file-diff` | Only `GitView` and `views/git/*` call them |
 | `api:git/log` (write paths), `api:git/checkout`, `api:git/checkout-commit`, `api:git/reset-to-commit`, `api:git/revert-commit`, `api:git/cherry-pick` | `views/git/HistoryCommitRow.tsx` only |
-| `api:git/merge`, `api:git/merge/abort`, `api:git/merge/continue`, `api:git/rebase`, `api:git/rebase/abort`, `api:git/rebase/continue`, `api:git/conflict-details` | `GitView` only |
+| `api:git/merge`, `api:git/merge/abort`, `api:git/merge/continue`, `api:git/rebase`, `api:git/rebase/abort`, `api:git/rebase/continue`, `api:git/cherry-pick/abort`, `api:git/cherry-pick/continue`, `api:git/revert/abort`, `api:git/revert/continue`, `api:git/conflict-details` | `GitView` only |
 | `api:git/push`, `api:git/pull`, `api:git/fetch` | `GitView` and `MobileChangesSurface` only |
 | `api:git/diff`, `api:git/file-diff` | `DiffView` only |
 | `api:git/pr-description` | `views/git/PullRequestSection.tsx` only |

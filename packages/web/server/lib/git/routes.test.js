@@ -8,6 +8,13 @@ const gitLibraries = {
   cherryPick: vi.fn(),
   revertCommit: vi.fn(),
   resetToCommit: vi.fn(),
+  createBranch: vi.fn(),
+  merge: vi.fn(),
+  rebase: vi.fn(),
+  abortCherryPick: vi.fn(),
+  continueCherryPick: vi.fn(),
+  abortRevert: vi.fn(),
+  continueRevert: vi.fn(),
   isGitRepository: vi.fn(),
   getStatus: vi.fn(),
   getWorktrees: vi.fn(),
@@ -28,6 +35,13 @@ vi.mock('./index.js', () => ({
   cherryPick: gitLibraries.cherryPick,
   revertCommit: gitLibraries.revertCommit,
   resetToCommit: gitLibraries.resetToCommit,
+  createBranch: gitLibraries.createBranch,
+  merge: gitLibraries.merge,
+  rebase: gitLibraries.rebase,
+  abortCherryPick: gitLibraries.abortCherryPick,
+  continueCherryPick: gitLibraries.continueCherryPick,
+  abortRevert: gitLibraries.abortRevert,
+  continueRevert: gitLibraries.continueRevert,
   isGitRepository: gitLibraries.isGitRepository,
   getStatus: gitLibraries.getStatus,
   getWorktrees: gitLibraries.getWorktrees,
@@ -97,6 +111,13 @@ describe('git routes index mutations', () => {
     gitLibraries.cherryPick.mockReset();
     gitLibraries.revertCommit.mockReset();
     gitLibraries.resetToCommit.mockReset();
+    gitLibraries.createBranch.mockReset();
+    gitLibraries.merge.mockReset();
+    gitLibraries.rebase.mockReset();
+    gitLibraries.abortCherryPick.mockReset();
+    gitLibraries.continueCherryPick.mockReset();
+    gitLibraries.abortRevert.mockReset();
+    gitLibraries.continueRevert.mockReset();
     gitLibraries.isGitRepository.mockReset();
     gitLibraries.getStatus.mockReset();
     gitLibraries.getGitHistoryRefs.mockReset();
@@ -208,6 +229,83 @@ describe('git routes index mutations', () => {
     );
     expect(resetResponse.statusCode).toBe(200);
     expect(gitLibraries.resetToCommit).toHaveBeenCalledWith('/repo', hash, 'mixed', false);
+  });
+
+  it('rejects option-like merge, rebase, and branch refs before calling git', async () => {
+    const { app, getRoute } = createRouteRegistry();
+    registerGitRoutes(app);
+
+    const mergeResponse = createMockResponse();
+    await getRoute('POST', '/api/git/merge')(
+      { query: { directory: '/repo' }, body: { branch: '--help' } },
+      mergeResponse,
+    );
+    expect(mergeResponse.statusCode).toBe(400);
+    expect(mergeResponse.body).toEqual({ error: 'Invalid ref' });
+
+    const rebaseResponse = createMockResponse();
+    await getRoute('POST', '/api/git/rebase')(
+      { query: { directory: '/repo' }, body: { onto: '-x' } },
+      rebaseResponse,
+    );
+    expect(rebaseResponse.statusCode).toBe(400);
+    expect(rebaseResponse.body).toEqual({ error: 'Invalid ref' });
+
+    const startPointResponse = createMockResponse();
+    await getRoute('POST', '/api/git/branches')(
+      { query: { directory: '/repo' }, body: { name: 'feature', startPoint: '--orphan' } },
+      startPointResponse,
+    );
+    expect(startPointResponse.statusCode).toBe(400);
+    expect(startPointResponse.body).toEqual({ error: 'Invalid ref' });
+
+    const nameResponse = createMockResponse();
+    await getRoute('POST', '/api/git/branches')(
+      { query: { directory: '/repo' }, body: { name: '-evil' } },
+      nameResponse,
+    );
+    expect(nameResponse.statusCode).toBe(400);
+    expect(nameResponse.body).toEqual({ error: 'Invalid ref' });
+
+    expect(gitLibraries.merge).not.toHaveBeenCalled();
+    expect(gitLibraries.rebase).not.toHaveBeenCalled();
+    expect(gitLibraries.createBranch).not.toHaveBeenCalled();
+  });
+
+  it('returns a typed conflict response for a blocked hard reset', async () => {
+    const error = Object.assign(new Error('Cannot hard reset: uncommitted changes in working tree'), {
+      code: 'reset_hard_dirty',
+    });
+    gitLibraries.resetToCommit.mockRejectedValue(error);
+    const { app, getRoute } = createRouteRegistry();
+    registerGitRoutes(app);
+    const response = createMockResponse();
+
+    await getRoute('POST', '/api/git/reset-to-commit')(
+      { query: { directory: '/repo' }, body: { hash: 'a'.repeat(40), mode: 'hard' } },
+      response,
+    );
+
+    expect(response.statusCode).toBe(409);
+    expect(response.body).toEqual({ error: error.message, code: 'reset_hard_dirty' });
+  });
+
+  it.each([
+    ['/api/git/cherry-pick/abort', 'abortCherryPick', { success: true }],
+    ['/api/git/cherry-pick/continue', 'continueCherryPick', { success: true, conflict: false }],
+    ['/api/git/revert/abort', 'abortRevert', { success: true }],
+    ['/api/git/revert/continue', 'continueRevert', { success: true, conflict: false }],
+  ])('passes through %s results', async (routePath, operation, result) => {
+    gitLibraries[operation].mockResolvedValue(result);
+    const { app, getRoute } = createRouteRegistry();
+    registerGitRoutes(app);
+    const response = createMockResponse();
+
+    await getRoute('POST', routePath)({ query: { directory: '/repo' } }, response);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toEqual(result);
+    expect(gitLibraries[operation]).toHaveBeenCalledWith('/repo');
   });
 });
 

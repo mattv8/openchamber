@@ -64,6 +64,7 @@ export const GitGraphPanel: React.FC<GitGraphPanelProps> = ({
   const fetchHistoryPage = useGitStore((state) => state.fetchHistoryPage);
   const [mergeBase, setMergeBase] = React.useState<string | null>(null);
   const [mergeBaseError, setMergeBaseError] = React.useState<string | null>(null);
+  const [actionsBusy, setActionsBusy] = React.useState(false);
   const scrollContainerRef = React.useRef<HTMLDivElement | null>(null);
   const sentinelRef = React.useRef<HTMLDivElement | null>(null);
   const appendRequestPendingRef = React.useRef(false);
@@ -444,10 +445,12 @@ export const GitGraphPanel: React.FC<GitGraphPanelProps> = ({
                   hoverDetailsCache={hoverDetailsCache}
                   compactGraph={true}
                   onConflict={onConflict}
-                  onActionSuccess={onActionSuccess}
-                  commitComparison={comparison}
-                  commitDetailsController={commitDetailsController}
-                  onCompareWithRemote={upstreamRevision
+                   onActionSuccess={onActionSuccess}
+                   actionsBusy={actionsBusy}
+                   onActionsBusyChange={setActionsBusy}
+                   commitComparison={comparison}
+                   commitDetailsController={commitDetailsController}
+                   onCompareWithRemote={upstreamRevision
                     ? () => applyComparisonOverride(commitHash, upstreamRevision, upstreamRef?.name ?? upstreamRevision)
                     : undefined}
                   canCompareWithRemote={Boolean(upstreamRevision)}

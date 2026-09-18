@@ -75,6 +75,7 @@ export const HistorySection: React.FC<HistorySectionProps> = ({
 }) => {
   const { t } = useI18n();
   const [isOpen, setIsOpen] = React.useState(true);
+  const [actionsBusy, setActionsBusy] = React.useState(false);
   const isGraphMode = mode === 'graph';
   const hoverCoordinator = React.useMemo(() => GitCommitHoverPopover.createCoordinator(), []);
   const [, forceExpandedRefresh] = React.useReducer((count: number) => count + 1, 0);
@@ -223,6 +224,8 @@ export const HistorySection: React.FC<HistorySectionProps> = ({
             hoverDetailsCache={hoverDetailsCache}
             onConflict={onConflict}
             onActionSuccess={onActionSuccess}
+            actionsBusy={actionsBusy}
+            onActionsBusyChange={setActionsBusy}
             commitComparison={comparison}
             commitDetailsController={commitDetailsController}
           />

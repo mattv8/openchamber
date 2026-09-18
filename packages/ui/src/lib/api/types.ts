@@ -156,6 +156,14 @@ export interface GitRemoteComparison {
   behind: number;
 }
 
+export interface GitCherryPickInProgress {
+  head: string;
+}
+
+export interface GitRevertInProgress {
+  head: string;
+}
+
 export interface GitStatus {
   current: string;
   tracking: string | null;
@@ -178,6 +186,10 @@ export interface GitStatus {
   mergeInProgress?: GitMergeInProgress | null;
   /** Present when a rebase is in progress */
   rebaseInProgress?: GitRebaseInProgress | null;
+  /** Present when a cherry-pick is in progress */
+  cherryPickInProgress?: GitCherryPickInProgress | null;
+  /** Present when a revert is in progress */
+  revertInProgress?: GitRevertInProgress | null;
   /** Phase 1: reason for attention-required state */
   attentionReason?: 'merge' | 'rebase' | 'cherry-pick' | 'revert' | 'bisect' | null;
 }
@@ -711,6 +723,10 @@ export interface GitAPI {
   merge(directory: string, options: { branch: string }): Promise<GitMergeResult>;
   abortMerge(directory: string): Promise<{ success: boolean }>;
   continueMerge(directory: string): Promise<{ success: boolean; conflict: boolean; conflictFiles?: string[] }>;
+  abortCherryPick?(directory: string): Promise<{ success: boolean }>;
+  continueCherryPick?(directory: string): Promise<{ success: boolean; conflict: boolean; conflictFiles?: string[] }>;
+  abortRevert?(directory: string): Promise<{ success: boolean }>;
+  continueRevert?(directory: string): Promise<{ success: boolean; conflict: boolean; conflictFiles?: string[] }>;
   checkoutCommit(directory: string, hash: string): Promise<CheckoutCommitResponse>;
   cherryPick(directory: string, hash: string): Promise<CherryPickResponse>;
   revertCommit(directory: string, hash: string): Promise<RevertCommitResponse>;

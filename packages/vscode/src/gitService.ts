@@ -346,6 +346,93 @@ async function execGit(args: string[], cwd: string): Promise<{ stdout: string; s
   return executeGit(args, normalizePath(cwd), { binary: gitApi?.git.path || 'git' });
 }
 
+const isSafeGitRef = (value: string): boolean => (
+  value.length > 0 &&
+  value.length <= 512 &&
+  !value.startsWith('-') &&
+  !/[\s\0~^:?*\[\\]/.test(value) &&
+  !value.includes('..')
+);
+
+async function resolveGitStateMarkerPath(directory: string, marker: string): Promise<string | null> {
+  const result = await execGit(['rev-parse', '--git-path', marker], directory);
+  if (result.exitCode !== 0 || !result.stdout.trim()) {
+    return null;
+  }
+  return path.resolve(directory, result.stdout.trim());
+}
+
+export async function resolveGitStateMarker(directory: string, marker: string): Promise<boolean> {
+  const markerPath = await resolveGitStateMarkerPath(directory, marker);
+  if (!markerPath) {
+    return false;
+  }
+  return fs.promises.stat(markerPath).then(() => true).catch(() => false);
+}
+
+export function parseUnmergedFiles(porcelainOutput: string): string[] {
+  const records = porcelainOutput.split('\0');
+  const files: string[] = [];
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index] ?? '';
+    const xy = record.slice(0, 2);
+    const isRenameOrCopy = xy[0] === 'R' || xy[0] === 'C' || xy[1] === 'R' || xy[1] === 'C';
+    const isUnmerged = xy[0] === 'U' || xy[1] === 'U' || xy === 'AA' || xy === 'DD';
+    if (isUnmerged && record.length > 3) {
+      files.push(record.slice(3));
+    }
+    if (isRenameOrCopy) {
+      index += 1;
+    }
+  }
+  return files;
+}
+
+export function classifyGitOperationFailure({
+  hasMarker,
+  conflictFiles,
+  isConflict = false,
+}: {
+  hasMarker: boolean;
+  conflictFiles: string[];
+  isConflict?: boolean;
+}): { success: false; conflict: true; conflictFiles: string[] } | null {
+  if (isConflict || (hasMarker && conflictFiles.length > 0)) {
+    return { success: false, conflict: true, conflictFiles };
+  }
+  return null;
+}
+
+async function classifyOperationFailure(
+  directory: string,
+  marker: string | string[],
+  isConflict: boolean
+): Promise<{ success: false; conflict: true; conflictFiles: string[] } | null> {
+  const markers = Array.isArray(marker) ? marker : [marker];
+  const hasMarker = (await Promise.all(markers.map((candidate) => resolveGitStateMarker(directory, candidate)))).some(Boolean);
+  const statusResult = await execGit(['status', '--porcelain=v1', '-z'], directory);
+  return classifyGitOperationFailure({
+    hasMarker,
+    conflictFiles: parseUnmergedFiles(statusResult.stdout),
+    isConflict,
+  });
+}
+
+async function assertNoOperationInProgress(directory: string, requestedOperation: string): Promise<void> {
+  const markers: Array<[string | string[], string]> = [
+    ['MERGE_HEAD', 'merge'],
+    [['rebase-merge', 'rebase-apply'], 'rebase'],
+    ['CHERRY_PICK_HEAD', 'cherry-pick'],
+    ['REVERT_HEAD', 'revert'],
+  ];
+  for (const [marker, operation] of markers) {
+    const candidates = Array.isArray(marker) ? marker : [marker];
+    if ((await Promise.all(candidates.map((candidate) => resolveGitStateMarker(directory, candidate)))).some(Boolean)) {
+      throw new Error(`[operation_in_progress] Cannot ${requestedOperation}: ${operation} is already in progress.`);
+    }
+  }
+}
+
 function isValidCommitHash(hash: string): boolean {
   return /^[0-9a-fA-F]{7,64}$/.test(hash);
 }
@@ -609,6 +696,14 @@ interface GitRebaseInProgress {
   onto: string;
 }
 
+interface GitCherryPickInProgress {
+  head: string;
+}
+
+interface GitRevertInProgress {
+  head: string;
+}
+
 export interface GitStatusResult {
   current: string;
   tracking: string | null;
@@ -624,6 +719,10 @@ export interface GitStatusResult {
   mergeInProgress?: GitMergeInProgress | null;
   /** Present when a rebase is in progress */
   rebaseInProgress?: GitRebaseInProgress | null;
+  /** Present when a cherry-pick is in progress */
+  cherryPickInProgress?: GitCherryPickInProgress | null;
+  /** Present when a revert is in progress */
+  revertInProgress?: GitRevertInProgress | null;
 }
 
 type GitStatusOptions = {
@@ -674,7 +773,7 @@ export async function getGitStatus(directory: string, options?: GitStatusOptions
   
   if (!repo) {
     // Fallback to raw git
-    return getGitStatusRaw(directory);
+    return { ...await getGitStatusRaw(directory), ...await checkInProgressOperations(directory) };
   }
 
   const state = repo.state;
@@ -722,30 +821,33 @@ export async function getGitStatus(directory: string, options?: GitStatusOptions
 }
 
 /**
- * Check for in-progress merge/rebase operations
+ * Check for in-progress operations using Git's resolved state paths.
  */
 async function checkInProgressOperations(directory: string): Promise<{
   mergeInProgress?: GitMergeInProgress | null;
   rebaseInProgress?: GitRebaseInProgress | null;
+  cherryPickInProgress?: GitCherryPickInProgress | null;
+  revertInProgress?: GitRevertInProgress | null;
 }> {
   const result: {
     mergeInProgress?: GitMergeInProgress | null;
     rebaseInProgress?: GitRebaseInProgress | null;
+    cherryPickInProgress?: GitCherryPickInProgress | null;
+    revertInProgress?: GitRevertInProgress | null;
   } = {};
-
-  const gitDir = path.join(directory, '.git');
 
   try {
     // Check MERGE_HEAD for merge in progress
-    const mergeHeadPath = path.join(gitDir, 'MERGE_HEAD');
-    const mergeHeadExists = await fs.promises.stat(mergeHeadPath).then(() => true).catch(() => false);
+    const mergeHeadPath = await resolveGitStateMarkerPath(directory, 'MERGE_HEAD');
+    const mergeHeadExists = mergeHeadPath ? await resolveGitStateMarker(directory, 'MERGE_HEAD') : false;
     
-    if (mergeHeadExists) {
+    if (mergeHeadExists && mergeHeadPath) {
       const mergeHead = await fs.promises.readFile(mergeHeadPath, 'utf8').catch(() => '');
       const headSha = mergeHead.trim().slice(0, 7);
       // Only set mergeInProgress if we actually have a valid head SHA
       if (headSha) {
-        const mergeMsg = await fs.promises.readFile(path.join(gitDir, 'MERGE_MSG'), 'utf8').catch(() => '');
+        const mergeMsgPath = await resolveGitStateMarkerPath(directory, 'MERGE_MSG');
+        const mergeMsg = mergeMsgPath ? await fs.promises.readFile(mergeMsgPath, 'utf8').catch(() => '') : '';
         result.mergeInProgress = {
           head: headSha,
           message: mergeMsg.split('\n')[0] || '',
@@ -758,13 +860,14 @@ async function checkInProgressOperations(directory: string): Promise<{
 
   try {
     // Check for rebase in progress (.git/rebase-merge or .git/rebase-apply)
-    const rebaseMergeExists = await fs.promises.stat(path.join(gitDir, 'rebase-merge')).then(() => true).catch(() => false);
-    const rebaseApplyExists = await fs.promises.stat(path.join(gitDir, 'rebase-apply')).then(() => true).catch(() => false);
+    const rebaseMergeExists = await resolveGitStateMarker(directory, 'rebase-merge');
+    const rebaseApplyExists = await resolveGitStateMarker(directory, 'rebase-apply');
     
     if (rebaseMergeExists || rebaseApplyExists) {
       const rebaseDir = rebaseMergeExists ? 'rebase-merge' : 'rebase-apply';
-      const headName = await fs.promises.readFile(path.join(gitDir, rebaseDir, 'head-name'), 'utf8').catch(() => '');
-      const onto = await fs.promises.readFile(path.join(gitDir, rebaseDir, 'onto'), 'utf8').catch(() => '');
+      const rebasePath = await resolveGitStateMarkerPath(directory, rebaseDir);
+      const headName = rebasePath ? await fs.promises.readFile(path.join(rebasePath, 'head-name'), 'utf8').catch(() => '') : '';
+      const onto = rebasePath ? await fs.promises.readFile(path.join(rebasePath, 'onto'), 'utf8').catch(() => '') : '';
       
       const headNameTrimmed = headName.trim().replace('refs/heads/', '');
       const ontoTrimmed = onto.trim().slice(0, 7);
@@ -779,6 +882,23 @@ async function checkInProgressOperations(directory: string): Promise<{
     }
   } catch {
     // ignore
+  }
+
+  for (const [marker, property] of [
+    ['CHERRY_PICK_HEAD', 'cherryPickInProgress'],
+    ['REVERT_HEAD', 'revertInProgress'],
+  ] as const) {
+    try {
+      const markerPath = await resolveGitStateMarkerPath(directory, marker);
+      if (markerPath && await resolveGitStateMarker(directory, marker)) {
+        const head = (await fs.promises.readFile(markerPath, 'utf8')).trim();
+        if (head) {
+          result[property] = { head };
+        }
+      }
+    } catch {
+      // ignore
+    }
   }
 
   return result;
@@ -1002,6 +1122,9 @@ export async function checkoutBranch(directory: string, branch: string): Promise
  * Create a new branch
  */
 export async function createBranch(directory: string, name: string, startPoint?: string): Promise<{ success: boolean; branch: string }> {
+  if (!isSafeGitRef(name) || (startPoint !== undefined && !isSafeGitRef(startPoint))) {
+    throw new Error('Invalid ref');
+  }
   const repo = await getRepository(directory);
   
   if (repo) {
@@ -4200,6 +4323,10 @@ export async function rebase(
   directory: string,
   options: { onto: string }
 ): Promise<GitRebaseResult> {
+  if (!isSafeGitRef(options.onto)) {
+    throw new Error('Invalid ref');
+  }
+  await assertNoOperationInProgress(directory, 'rebase');
   const result = await execGit(['rebase', options.onto], directory);
 
   if (result.exitCode === 0) {
@@ -4212,14 +4339,9 @@ export async function rebase(
     output.includes('could not apply') ||
     output.includes('merge conflict');
 
-  if (isConflict) {
-    const statusResult = await execGit(['status', '--porcelain'], directory);
-    const conflictFiles = statusResult.stdout
-      .split('\n')
-      .filter((line) => line.startsWith('UU') || line.startsWith('AA') || line.startsWith('DD'))
-      .map((line) => line.slice(3).trim());
-
-    return { success: false, conflict: true, conflictFiles };
+  const conflict = await classifyOperationFailure(directory, ['rebase-merge', 'rebase-apply'], isConflict);
+  if (conflict) {
+    return conflict;
   }
 
   throw new Error(result.stderr || 'Rebase failed');
@@ -4240,6 +4362,10 @@ export async function merge(
   directory: string,
   options: { branch: string }
 ): Promise<GitMergeResult> {
+  if (!isSafeGitRef(options.branch)) {
+    throw new Error('Invalid ref');
+  }
+  await assertNoOperationInProgress(directory, 'merge');
   const result = await execGit(['merge', options.branch], directory);
 
   if (result.exitCode === 0) {
@@ -4252,14 +4378,9 @@ export async function merge(
     output.includes('merge conflict') ||
     output.includes('automatic merge failed');
 
-  if (isConflict) {
-    const statusResult = await execGit(['status', '--porcelain'], directory);
-    const conflictFiles = statusResult.stdout
-      .split('\n')
-      .filter((line) => line.startsWith('UU') || line.startsWith('AA') || line.startsWith('DD'))
-      .map((line) => line.slice(3).trim());
-
-    return { success: false, conflict: true, conflictFiles };
+  const conflict = await classifyOperationFailure(directory, 'MERGE_HEAD', isConflict);
+  if (conflict) {
+    return conflict;
   }
 
   throw new Error(result.stderr || 'Merge failed');
@@ -4270,6 +4391,16 @@ export async function merge(
  */
 export async function abortMerge(directory: string): Promise<{ success: boolean }> {
   const result = await execGit(['merge', '--abort'], directory);
+  return { success: result.exitCode === 0 };
+}
+
+export async function abortCherryPick(directory: string): Promise<{ success: boolean }> {
+  const result = await execGit(['cherry-pick', '--abort'], directory);
+  return { success: result.exitCode === 0 };
+}
+
+export async function abortRevert(directory: string): Promise<{ success: boolean }> {
+  const result = await execGit(['revert', '--abort'], directory);
   return { success: result.exitCode === 0 };
 }
 
@@ -4289,14 +4420,9 @@ export async function continueRebase(directory: string): Promise<{ success: bool
     output.includes('needs merge') ||
     output.includes('unmerged');
 
-  if (isConflict) {
-    const statusResult = await execGit(['status', '--porcelain'], directory);
-    const conflictFiles = statusResult.stdout
-      .split('\n')
-      .filter((line) => line.startsWith('UU') || line.startsWith('AA') || line.startsWith('DD'))
-      .map((line) => line.slice(3).trim());
-
-    return { success: false, conflict: true, conflictFiles };
+  const conflict = await classifyOperationFailure(directory, ['rebase-merge', 'rebase-apply'], isConflict);
+  if (conflict) {
+    return conflict;
   }
 
   throw new Error(result.stderr || 'Continue rebase failed');
@@ -4319,17 +4445,48 @@ export async function continueMerge(directory: string): Promise<{ success: boole
     output.includes('needs merge') ||
     output.includes('unmerged');
 
-  if (isConflict) {
-    const statusResult = await execGit(['status', '--porcelain'], directory);
-    const conflictFiles = statusResult.stdout
-      .split('\n')
-      .filter((line) => line.startsWith('UU') || line.startsWith('AA') || line.startsWith('DD'))
-      .map((line) => line.slice(3).trim());
-
-    return { success: false, conflict: true, conflictFiles };
+  const conflict = await classifyOperationFailure(directory, 'MERGE_HEAD', isConflict);
+  if (conflict) {
+    return conflict;
   }
 
   throw new Error(result.stderr || 'Continue merge failed');
+}
+
+export async function continueCherryPick(directory: string): Promise<{ success: boolean; conflict: boolean; conflictFiles?: string[] }> {
+  const result = await execGit(['cherry-pick', '--continue'], directory);
+  if (result.exitCode === 0) {
+    return { success: true, conflict: false };
+  }
+
+  const output = (result.stdout + result.stderr).toLowerCase();
+  const conflict = await classifyOperationFailure(
+    directory,
+    'CHERRY_PICK_HEAD',
+    output.includes('conflict') || output.includes('needs merge') || output.includes('unmerged')
+  );
+  if (conflict) {
+    return conflict;
+  }
+  throw new Error(result.stderr || 'Continue cherry-pick failed');
+}
+
+export async function continueRevert(directory: string): Promise<{ success: boolean; conflict: boolean; conflictFiles?: string[] }> {
+  const result = await execGit(['revert', '--continue'], directory);
+  if (result.exitCode === 0) {
+    return { success: true, conflict: false };
+  }
+
+  const output = (result.stdout + result.stderr).toLowerCase();
+  const conflict = await classifyOperationFailure(
+    directory,
+    'REVERT_HEAD',
+    output.includes('conflict') || output.includes('needs merge') || output.includes('unmerged')
+  );
+  if (conflict) {
+    return conflict;
+  }
+  throw new Error(result.stderr || 'Continue revert failed');
 }
 
 // ============== Commit Actions ==============
@@ -4349,6 +4506,7 @@ export async function cherryPick(directory: string, hash: string): Promise<{ suc
   if (!isValidCommitHash(hash)) {
     throw new Error('Invalid commit hash');
   }
+  await assertNoOperationInProgress(directory, 'cherry-pick');
   const result = await execGit(['cherry-pick', hash], directory);
 
   if (result.exitCode === 0) {
@@ -4360,14 +4518,9 @@ export async function cherryPick(directory: string, hash: string): Promise<{ suc
     output.includes('conflict') ||
     output.includes('patch does not apply');
 
-  if (isConflict) {
-    const statusResult = await execGit(['status', '--porcelain'], directory);
-    const conflictFiles = statusResult.stdout
-      .split('\n')
-      .filter((line) => line.startsWith('UU') || line.startsWith('AA') || line.startsWith('DD'))
-      .map((line) => line.slice(3).trim());
-
-    return { success: false, conflict: true, conflictFiles };
+  const conflict = await classifyOperationFailure(directory, 'CHERRY_PICK_HEAD', isConflict);
+  if (conflict) {
+    return conflict;
   }
 
   throw new Error(result.stderr || 'Cherry-pick failed');
@@ -4377,6 +4530,7 @@ export async function revertCommit(directory: string, hash: string): Promise<{ s
   if (!isValidCommitHash(hash)) {
     throw new Error('Invalid commit hash');
   }
+  await assertNoOperationInProgress(directory, 'revert');
   const result = await execGit(['revert', '--no-commit', hash], directory);
 
   if (result.exitCode === 0) {
@@ -4388,14 +4542,9 @@ export async function revertCommit(directory: string, hash: string): Promise<{ s
     output.includes('conflict') ||
     output.includes('revert failed');
 
-  if (isConflict) {
-    const statusResult = await execGit(['status', '--porcelain'], directory);
-    const conflictFiles = statusResult.stdout
-      .split('\n')
-      .filter((line) => line.startsWith('UU') || line.startsWith('AA') || line.startsWith('DD'))
-      .map((line) => line.slice(3).trim());
-
-    return { success: false, conflict: true, conflictFiles };
+  const conflict = await classifyOperationFailure(directory, 'REVERT_HEAD', isConflict);
+  if (conflict) {
+    return conflict;
   }
 
   throw new Error(result.stderr || 'Revert failed');
@@ -4414,7 +4563,7 @@ export async function resetToCommit(
     const statusResult = await execGit(['status', '--porcelain'], directory);
     const isDirty = statusResult.stdout.trim().length > 0;
     if (isDirty) {
-      throw new Error('Cannot hard reset: uncommitted changes in working tree. Stash or commit first, or use force.');
+      throw new Error('[reset_hard_dirty] Cannot hard reset: uncommitted changes in working tree. Stash or commit first, or use force.');
     }
   }
 
@@ -4554,14 +4703,13 @@ export async function canonicalizeWorktreeState(
     if (mergeHead.exitCode === 0) {
       attentionReason = 'merge';
     } else {
-      const fsp = fs.promises;
-      const rebaseMerge = await fsp.stat(path.join(directoryPath, '.git', 'rebase-merge')).then(() => true).catch(() => false);
-      const rebaseApply = await fsp.stat(path.join(directoryPath, '.git', 'rebase-apply')).then(() => true).catch(() => false);
+      const rebaseMerge = await resolveGitStateMarker(directoryPath, 'rebase-merge');
+      const rebaseApply = await resolveGitStateMarker(directoryPath, 'rebase-apply');
       if (rebaseMerge || rebaseApply) {
         attentionReason = 'rebase';
       } else {
-        const cherryPickHead = await fsp.stat(path.join(directoryPath, '.git', 'CHERRY_PICK_HEAD')).then(() => true).catch(() => false);
-        const revertHead = await fsp.stat(path.join(directoryPath, '.git', 'REVERT_HEAD')).then(() => true).catch(() => false);
+        const cherryPickHead = await resolveGitStateMarker(directoryPath, 'CHERRY_PICK_HEAD');
+        const revertHead = await resolveGitStateMarker(directoryPath, 'REVERT_HEAD');
         if (cherryPickHead) attentionReason = 'cherry-pick';
         else if (revertHead) attentionReason = 'revert';
       }
