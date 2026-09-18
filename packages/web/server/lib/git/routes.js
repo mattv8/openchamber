@@ -33,6 +33,13 @@ export function registerGitRoutes(app, { broadcastGlobalUiEvent, emitWorktreeCha
   const ROOT_QUERY_MARKER = '__ROOT__';
   const COMMIT_ISH_PATTERN = /^[0-9a-f]{7,64}$/i;
   const FULL_GIT_OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+  const isSafeGitRef = (value) =>
+    Object.prototype.toString.call(value) === '[object String]' &&
+    value.length > 0 &&
+    value.length <= 512 &&
+    !value.startsWith('-') &&
+    !/[\s\0~^:?*\[\\]/.test(value) &&
+    !value.includes('..');
   const readSingleQueryString = (value) => {
     const raw = Array.isArray(value) ? value[0] : value;
     return Object.prototype.toString.call(raw) === '[object String]' ? String(raw) : null;
@@ -55,6 +62,13 @@ export function registerGitRoutes(app, { broadcastGlobalUiEvent, emitWorktreeCha
     if (!status) return false;
     res.status(status).json({ error: error.message, code: error.code });
     return true;
+  };
+  const sendGitOperationError = (res, error, fallback) => {
+    if (error?.code === 'reset_hard_dirty' || error?.code === 'operation_in_progress') {
+      res.status(409).json({ error: error.message, code: error.code });
+      return;
+    }
+    res.status(500).json({ error: error.message || fallback });
   };
 
   const resolveDirectoryQuery = (value, preserveWhitespace = false) => {
@@ -913,12 +927,15 @@ export function registerGitRoutes(app, { broadcastGlobalUiEvent, emitWorktreeCha
       if (!directory) {
         return res.status(400).json({ error: 'directory parameter is required' });
       }
+      if (!isSafeGitRef(req.body?.onto)) {
+        return res.status(400).json({ error: 'Invalid ref' });
+      }
 
       const result = await rebase(directory, req.body);
       res.json(result);
     } catch (error) {
       console.error('Failed to rebase:', error);
-      res.status(500).json({ error: error.message || 'Failed to rebase' });
+      sendGitOperationError(res, error, 'Failed to rebase');
     }
   });
 
@@ -945,12 +962,15 @@ export function registerGitRoutes(app, { broadcastGlobalUiEvent, emitWorktreeCha
       if (!directory) {
         return res.status(400).json({ error: 'directory parameter is required' });
       }
+      if (!isSafeGitRef(req.body?.branch)) {
+        return res.status(400).json({ error: 'Invalid ref' });
+      }
 
       const result = await merge(directory, req.body);
       res.json(result);
     } catch (error) {
       console.error('Failed to merge:', error);
-      res.status(500).json({ error: error.message || 'Failed to merge' });
+      sendGitOperationError(res, error, 'Failed to merge');
     }
   });
 
@@ -999,6 +1019,62 @@ export function registerGitRoutes(app, { broadcastGlobalUiEvent, emitWorktreeCha
     } catch (error) {
       console.error('Failed to continue merge:', error);
       res.status(500).json({ error: error.message || 'Failed to continue merge' });
+    }
+  });
+
+  app.post('/api/git/cherry-pick/abort', async (req, res) => {
+    const { abortCherryPick } = await getGitLibraries();
+    try {
+      const directory = req.query.directory;
+      if (!directory) {
+        return res.status(400).json({ error: 'directory parameter is required' });
+      }
+      res.json(await abortCherryPick(directory));
+    } catch (error) {
+      console.error('Failed to abort cherry-pick:', error);
+      res.status(500).json({ error: error.message || 'Failed to abort cherry-pick' });
+    }
+  });
+
+  app.post('/api/git/cherry-pick/continue', async (req, res) => {
+    const { continueCherryPick } = await getGitLibraries();
+    try {
+      const directory = req.query.directory;
+      if (!directory) {
+        return res.status(400).json({ error: 'directory parameter is required' });
+      }
+      res.json(await continueCherryPick(directory));
+    } catch (error) {
+      console.error('Failed to continue cherry-pick:', error);
+      res.status(500).json({ error: error.message || 'Failed to continue cherry-pick' });
+    }
+  });
+
+  app.post('/api/git/revert/abort', async (req, res) => {
+    const { abortRevert } = await getGitLibraries();
+    try {
+      const directory = req.query.directory;
+      if (!directory) {
+        return res.status(400).json({ error: 'directory parameter is required' });
+      }
+      res.json(await abortRevert(directory));
+    } catch (error) {
+      console.error('Failed to abort revert:', error);
+      res.status(500).json({ error: error.message || 'Failed to abort revert' });
+    }
+  });
+
+  app.post('/api/git/revert/continue', async (req, res) => {
+    const { continueRevert } = await getGitLibraries();
+    try {
+      const directory = req.query.directory;
+      if (!directory) {
+        return res.status(400).json({ error: 'directory parameter is required' });
+      }
+      res.json(await continueRevert(directory));
+    } catch (error) {
+      console.error('Failed to continue revert:', error);
+      res.status(500).json({ error: error.message || 'Failed to continue revert' });
     }
   });
 
@@ -1087,6 +1163,9 @@ export function registerGitRoutes(app, { broadcastGlobalUiEvent, emitWorktreeCha
       const startPoint = typeof req.body?.startPoint === 'string' ? req.body.startPoint : undefined;
       if (!name) {
         return res.status(400).json({ error: 'name is required' });
+      }
+      if (!isSafeGitRef(name) || (startPoint !== undefined && !isSafeGitRef(startPoint))) {
+        return res.status(400).json({ error: 'Invalid ref' });
       }
 
       const result = await createBranch(directory, name, { startPoint });
@@ -1250,7 +1329,7 @@ export function registerGitRoutes(app, { broadcastGlobalUiEvent, emitWorktreeCha
       res.json(result);
     } catch (error) {
       console.error('Failed to cherry-pick:', error);
-      res.status(500).json({ error: error.message || 'Failed to cherry-pick' });
+      sendGitOperationError(res, error, 'Failed to cherry-pick');
     }
   });
 
@@ -1269,7 +1348,7 @@ export function registerGitRoutes(app, { broadcastGlobalUiEvent, emitWorktreeCha
       res.json(result);
     } catch (error) {
       console.error('Failed to revert commit:', error);
-      res.status(500).json({ error: error.message || 'Failed to revert commit' });
+      sendGitOperationError(res, error, 'Failed to revert commit');
     }
   });
 
@@ -1291,7 +1370,7 @@ export function registerGitRoutes(app, { broadcastGlobalUiEvent, emitWorktreeCha
       res.json(result);
     } catch (error) {
       console.error('Failed to reset to commit:', error);
-      res.status(500).json({ error: error.message || 'Failed to reset' });
+      sendGitOperationError(res, error, 'Failed to reset');
     }
   });
 

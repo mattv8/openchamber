@@ -13,6 +13,12 @@ import {
   checkoutBranch,
   checkoutCommit,
   cherryPick,
+  abortCherryPick,
+  continueCherryPick,
+  abortRevert,
+  continueRevert,
+  classifyGitOperationFailure,
+  createBranch,
   createTag,
   createWorktree,
   getGitHistory,
@@ -29,6 +35,7 @@ import {
   getLog,
   getStatus,
   getTrackingBranch,
+  merge,
   getWorktrees,
   isGitRepository,
   observeWorktreeTopology,
@@ -37,6 +44,7 @@ import {
   resolvePrimaryWorktreeRoot,
   resolveWorktreeTopLevel,
   resetToCommit,
+  rebase,
   resolveBaseRefForLog,
   revertCommit,
   setLocalIdentity,
@@ -2083,9 +2091,10 @@ describe('resetToCommit', () => {
 
     await fs.promises.writeFile(filePath, 'dirty\n', 'utf8');
 
-    await expect(resetToCommit(tmpDir, firstCommit.commit, 'hard')).rejects.toThrow(
-      'Cannot hard reset: uncommitted changes in working tree'
-    );
+    await expect(resetToCommit(tmpDir, firstCommit.commit, 'hard')).rejects.toMatchObject({
+      code: 'reset_hard_dirty',
+      message: expect.stringContaining('Cannot hard reset: uncommitted changes in working tree'),
+    });
   });
 
   it('hard reset with dirty working tree with force succeeds', async () => {
@@ -2108,6 +2117,124 @@ describe('resetToCommit', () => {
     expect(log.latest.hash).toBe(firstCommit.commit);
     const content = await fs.promises.readFile(filePath, 'utf8');
     expect(content).toBe('first\n');
+  });
+});
+
+describe('in-progress commit operations', () => {
+  const createCherryPickConflict = async () => {
+    const { tmpDir, git } = await createTempRepo();
+    const filePath = path.join(tmpDir, 'file.txt');
+    await fs.promises.writeFile(filePath, 'base\n', 'utf8');
+    await git.add('file.txt');
+    await git.commit('Initial commit');
+    await git.checkoutBranch('feature', 'HEAD');
+    await fs.promises.writeFile(filePath, 'feature\n', 'utf8');
+    await git.add('file.txt');
+    const commit = await git.commit('Feature change');
+    await git.checkout('main');
+    await fs.promises.writeFile(filePath, 'main\n', 'utf8');
+    await git.add('file.txt');
+    await git.commit('Main change');
+    await cherryPick(tmpDir, commit.commit);
+    return { tmpDir, git, filePath, commit };
+  };
+
+  it('blocks a merge while a cherry-pick is in progress', async () => {
+    const { tmpDir } = await createCherryPickConflict();
+
+    await expect(merge(tmpDir, { branch: 'main' })).rejects.toMatchObject({
+      code: 'operation_in_progress',
+    });
+  });
+
+  it('reports cherry-pick state from its marker', async () => {
+    const { tmpDir, commit } = await createCherryPickConflict();
+
+    await expect(getStatus(tmpDir)).resolves.toMatchObject({
+      cherryPickInProgress: { head: commit.commit },
+      revertInProgress: null,
+    });
+  });
+
+  it('reports revert state from its marker', async () => {
+    const { tmpDir, git } = await createTempRepo();
+    const filePath = path.join(tmpDir, 'file.txt');
+    await fs.promises.writeFile(filePath, 'base\n', 'utf8');
+    await git.add('file.txt');
+    await git.commit('Initial commit');
+    await fs.promises.writeFile(filePath, 'change\n', 'utf8');
+    await git.add('file.txt');
+    const change = await git.commit('Change');
+    await fs.promises.writeFile(filePath, 'later\n', 'utf8');
+    await git.add('file.txt');
+    await git.commit('Later change');
+    await revertCommit(tmpDir, change.commit);
+
+    await expect(getStatus(tmpDir)).resolves.toMatchObject({
+      cherryPickInProgress: null,
+      revertInProgress: { head: change.commit },
+    });
+  });
+
+  it('aborts and continues a cherry-pick', async () => {
+    const aborted = await createCherryPickConflict();
+    await expect(abortCherryPick(aborted.tmpDir)).resolves.toEqual({ success: true });
+    await expect(getStatus(aborted.tmpDir)).resolves.toMatchObject({ cherryPickInProgress: null });
+
+    const continued = await createCherryPickConflict();
+    await fs.promises.writeFile(continued.filePath, 'feature\n', 'utf8');
+    await continued.git.add('file.txt');
+    await expect(continueCherryPick(continued.tmpDir)).resolves.toEqual({ success: true, conflict: false });
+    expect((await continued.git.log()).latest.message).toBe('Feature change');
+  });
+
+  it('aborts and continues a revert', async () => {
+    const { tmpDir, git } = await createTempRepo();
+    const filePath = path.join(tmpDir, 'file.txt');
+    await fs.promises.writeFile(filePath, 'base\n', 'utf8');
+    await git.add('file.txt');
+    await git.commit('Initial commit');
+    await fs.promises.writeFile(filePath, 'change\n', 'utf8');
+    await git.add('file.txt');
+    const change = await git.commit('Change');
+    await fs.promises.writeFile(filePath, 'later\n', 'utf8');
+    await git.add('file.txt');
+    await git.commit('Later change');
+
+    await revertCommit(tmpDir, change.commit);
+    await expect(abortRevert(tmpDir)).resolves.toEqual({ success: true });
+
+    await revertCommit(tmpDir, change.commit);
+    await fs.promises.writeFile(filePath, 'base\n', 'utf8');
+    await git.add('file.txt');
+    await expect(continueRevert(tmpDir)).resolves.toEqual({ success: true, conflict: false });
+    expect((await git.log()).latest.message).toContain('Revert');
+  });
+});
+
+describe('classifyGitOperationFailure', () => {
+  it('recognizes a marker-backed conflict without an English error message', () => {
+    expect(classifyGitOperationFailure({
+      error: new Error('localized failure'),
+      probe: { markerPresent: true, conflictFiles: ['file.txt'] },
+    })).toEqual({ success: false, conflict: true, conflictFiles: ['file.txt'] });
+  });
+
+  it('rethrows a non-conflict failure without an operation marker', () => {
+    const error = new Error('localized failure');
+    expect(() => classifyGitOperationFailure({
+      error,
+      probe: { markerPresent: false, conflictFiles: [] },
+    })).toThrow(error);
+  });
+});
+
+describe('safe operation refs', () => {
+  it('rejects option-like merge, rebase, and branch refs before opening a repository', async () => {
+    await expect(merge('/tmp', { branch: '--help' })).rejects.toThrow('Invalid ref');
+    await expect(rebase('/tmp', { onto: '-x' })).rejects.toThrow('Invalid ref');
+    await expect(createBranch('/tmp', '-evil', { startPoint: 'main' })).rejects.toThrow('Invalid ref');
+    await expect(createBranch('/tmp', 'feature', { startPoint: '--orphan' })).rejects.toThrow('Invalid ref');
   });
 });
 

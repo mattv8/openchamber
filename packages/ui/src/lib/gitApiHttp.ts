@@ -58,6 +58,25 @@ const API_BASE = '/api/git';
 const ROOT_QUERY_MARKER = '__ROOT__';
 const gitRangeDiffSchema = z.object({ diff: z.string() });
 const gitRangeFilesSchema = z.object({ files: z.array(z.object({ path: z.string(), status: z.string() })) });
+const gitOperationErrorBodySchema = z.object({
+  error: z.string().optional(),
+  code: z.string().optional(),
+});
+
+type GitOperationErrorBody = {
+  error?: string;
+  code?: string;
+};
+
+export class GitOperationRequestError extends Error {
+  readonly code?: string;
+
+  constructor(message: string, code?: string) {
+    super(message);
+    this.name = 'GitOperationRequestError';
+    this.code = code;
+  }
+}
 const gitRangeErrorSchema = z.object({ error: z.string() });
 const gitLogEntrySchema = z.object({
   hash: z.string(), date: z.string(), message: z.string(), refs: z.string(), body: z.string(),
@@ -1379,8 +1398,10 @@ export async function resetToCommit(
     body: JSON.stringify({ hash, mode, force }),
   });
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error(error.error || 'Failed to reset');
+    const error: GitOperationErrorBody = gitOperationErrorBodySchema.parse(
+      await response.json().catch(() => ({ error: response.statusText })),
+    );
+    throw new GitOperationRequestError(error.error ?? 'Failed to reset', error.code);
   }
   return completeStatusMutation(directory, response);
 }
@@ -1414,6 +1435,50 @@ export async function continueMerge(directory: string): Promise<{ success: boole
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: response.statusText }));
     throw new Error(error.error || 'Failed to continue merge');
+  }
+  return completeStatusMutation(directory, response);
+}
+
+export async function abortCherryPick(directory: string): Promise<{ success: boolean }> {
+  const response = await runtimeFetch(buildUrl(`${API_BASE}/cherry-pick/abort`, directory), {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(error.error || 'Failed to abort cherry-pick');
+  }
+  return completeStatusMutation(directory, response);
+}
+
+export async function continueCherryPick(directory: string): Promise<{ success: boolean; conflict: boolean; conflictFiles?: string[] }> {
+  const response = await runtimeFetch(buildUrl(`${API_BASE}/cherry-pick/continue`, directory), {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(error.error || 'Failed to continue cherry-pick');
+  }
+  return completeStatusMutation(directory, response);
+}
+
+export async function abortRevert(directory: string): Promise<{ success: boolean }> {
+  const response = await runtimeFetch(buildUrl(`${API_BASE}/revert/abort`, directory), {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(error.error || 'Failed to abort revert');
+  }
+  return completeStatusMutation(directory, response);
+}
+
+export async function continueRevert(directory: string): Promise<{ success: boolean; conflict: boolean; conflictFiles?: string[] }> {
+  const response = await runtimeFetch(buildUrl(`${API_BASE}/revert/continue`, directory), {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(error.error || 'Failed to continue revert');
   }
   return completeStatusMutation(directory, response);
 }

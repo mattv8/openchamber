@@ -74,7 +74,7 @@ import { pushCommittedChanges } from './git/commitAndPush';
 import type { GitRemote } from '@/lib/gitApi';
 import { getRootBranch } from '@/lib/worktrees/worktreeStatus';
 import { cn } from '@/lib/utils';
-import { generateCommitMessage as generateSessionCommitMessage, getGitWorktreeBootstrapStatus } from '@/lib/gitApi';
+import { decodeGitErrorMessage, generateCommitMessage as generateSessionCommitMessage, getGitWorktreeBootstrapStatus } from '@/lib/gitApi';
 import { sessionEvents } from '@/lib/sessionEvents';
 import { useI18n } from '@/lib/i18n';
 import { useDeviceInfo } from '@/lib/device';
@@ -2112,6 +2112,8 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
     try {
       const isMerge = !!status?.mergeInProgress?.head;
       const isRebase = !!(status?.rebaseInProgress?.headName || status?.rebaseInProgress?.onto);
+      const isCherryPick = !!status?.cherryPickInProgress?.head;
+      const isRevert = !!status?.revertInProgress?.head;
 
       if (isMerge) {
         const result = await git.continueMerge(gitDirectory);
@@ -2143,9 +2145,34 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
           await refreshStatusAndBranches();
           await refreshLog();
         }
+      } else if (isCherryPick && git.continueCherryPick) {
+        const result = await git.continueCherryPick(gitDirectory);
+        if (result.conflict) {
+          // Cherry-pick conflicts are not supported by the shared ConflictDialog
+          toast.error(t('gitView.toast.cherryPickConflictsDetected'));
+        } else {
+          invalidateHistory(gitDirectory);
+          toast.success(t('gitView.toast.cherryPickCompleted'));
+          await refreshStatusAndBranches();
+          await refreshLog();
+        }
+      } else if (isRevert && git.continueRevert) {
+        const result = await git.continueRevert(gitDirectory);
+        if (result.conflict) {
+          // Revert conflicts are not supported by the shared ConflictDialog
+          toast.error(t('gitView.toast.revertConflictsDetected'));
+        } else {
+          invalidateHistory(gitDirectory);
+          toast.success(t('gitView.toast.revertCompleted'));
+          await refreshStatusAndBranches();
+          await refreshLog();
+        }
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : t('gitView.toast.continueOperationFailed');
+      const message = decodeGitErrorMessage(
+        err instanceof Error ? err : new Error(String(err)),
+        t('gitView.toast.continueOperationFailed'),
+      );
       toast.error(message);
     }
   }, [gitDirectory, git, status, refreshStatusAndBranches, refreshLog, invalidateHistory, persistConflictState, clearConflictState, t]);
@@ -2155,18 +2182,31 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
 
     try {
       const isMerge = !!status?.mergeInProgress?.head;
+      const isRebase = !!(status?.rebaseInProgress?.headName || status?.rebaseInProgress?.onto);
+      const isCherryPick = !!status?.cherryPickInProgress?.head;
+      const isRevert = !!status?.revertInProgress?.head;
+
       if (isMerge) {
         await git.abortMerge(gitDirectory);
         toast.success(t('gitView.toast.mergeAborted'));
-      } else {
+      } else if (isRebase) {
         await git.abortRebase(gitDirectory);
         toast.success(t('gitView.toast.rebaseAborted'));
+      } else if (isCherryPick && git.abortCherryPick) {
+        await git.abortCherryPick(gitDirectory);
+        toast.success(t('gitView.toast.cherryPickAborted'));
+      } else if (isRevert && git.abortRevert) {
+        await git.abortRevert(gitDirectory);
+        toast.success(t('gitView.toast.revertAborted'));
       }
       clearConflictState();
       await refreshStatusAndBranches();
       await refreshLog();
     } catch (err) {
-      const message = err instanceof Error ? err.message : t('gitView.toast.abortOperationFailed');
+      const message = decodeGitErrorMessage(
+        err instanceof Error ? err : new Error(String(err)),
+        t('gitView.toast.abortOperationFailed'),
+      );
       toast.error(message);
     }
   }, [gitDirectory, git, status, refreshStatusAndBranches, refreshLog, clearConflictState, t]);
@@ -2311,7 +2351,7 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
       // Show a toast with manual resolution instructions
       toast.error(t('gitView.history.actions.conflictToastTitle'), {
         description: t('gitView.history.actions.conflictToastDescription', {
-          files: result.conflictFiles?.join(', ') ?? 'unknown files',
+          files: result.conflictFiles?.join(', ') ?? t('gitView.history.actions.unknownFiles'),
         }),
       });
       if (gitDirectory) {
@@ -2513,14 +2553,18 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
       {/* In-progress operation banner */}
       {currentDirectory && (
         (status?.mergeInProgress?.head) ||
-        (status?.rebaseInProgress?.headName || status?.rebaseInProgress?.onto)
+        (status?.rebaseInProgress?.headName || status?.rebaseInProgress?.onto) ||
+        (status?.cherryPickInProgress?.head) ||
+        (status?.revertInProgress?.head)
       ) && (
           <InProgressOperationBanner
             mergeInProgress={status?.mergeInProgress}
             rebaseInProgress={status?.rebaseInProgress}
+            cherryPickInProgress={status?.cherryPickInProgress}
+            revertInProgress={status?.revertInProgress}
             onContinue={handleContinueOperation}
             onAbort={handleAbortOperation}
-            onResolveWithAI={handleResolveWithAIFromBanner}
+            onResolveWithAI={status?.mergeInProgress || status?.rebaseInProgress ? handleResolveWithAIFromBanner : undefined}
             conflictCount={conflictCount}
             isLoading={isLoading}
           />
@@ -2666,6 +2710,8 @@ export const GitView: React.FC<GitViewProps> = ({ isActive }) => {
                   showHeader={false}
                   contentMaxHeightClassName="h-full max-h-none"
                   branchDivider={historyBranchDivider}
+                  onConflict={handleGraphConflict}
+                  onActionSuccess={handleGraphActionSuccess}
                 />
               ) : null
             )}

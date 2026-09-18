@@ -8,6 +8,12 @@ const gitService = {
   cherryPick: mock(),
   revertCommit: mock(),
   resetToCommit: mock(),
+  merge: mock(),
+  rebase: mock(),
+  abortCherryPick: mock(),
+  continueCherryPick: mock(),
+  abortRevert: mock(),
+  continueRevert: mock(),
   createWorktree: mock(),
   getWorktreeBootstrapStatus: mock(),
   getGitHistoryRefs: mock(),
@@ -30,6 +36,12 @@ describe('bridge git runtime index mutations', () => {
     gitService.cherryPick.mockReset();
     gitService.revertCommit.mockReset();
     gitService.resetToCommit.mockReset();
+    gitService.merge.mockReset();
+    gitService.rebase.mockReset();
+    gitService.abortCherryPick.mockReset();
+    gitService.continueCherryPick.mockReset();
+    gitService.abortRevert.mockReset();
+    gitService.continueRevert.mockReset();
     gitService.createWorktree.mockReset();
     gitService.getWorktreeBootstrapStatus.mockReset();
     gitService.getGitHistoryRefs.mockReset();
@@ -153,6 +165,79 @@ describe('bridge git runtime index mutations', () => {
       type: 'api:git/reset-to-commit',
       payload: { directory: '/repo', hash, mode: 'mixed' },
     })).toEqual({ id: '4', type: 'api:git/reset-to-commit', success: true, data: { success: true } });
+  });
+
+  it('rejects option-like merge and rebase refs before reaching the git service', async () => {
+    const mergeResponse = await handleStandardGitBridgeMessage({
+      id: 'merge',
+      type: 'api:git/merge',
+      payload: { directory: '/repo', branch: '--exec=x' },
+    });
+    const rebaseResponse = await handleStandardGitBridgeMessage({
+      id: 'rebase',
+      type: 'api:git/rebase',
+      payload: { directory: '/repo', onto: '-i' },
+    });
+
+    expect(mergeResponse).toEqual({ id: 'merge', type: 'api:git/merge', success: false, error: 'Invalid ref' });
+    expect(rebaseResponse).toEqual({ id: 'rebase', type: 'api:git/rebase', success: false, error: 'Invalid ref' });
+    expect(gitService.merge).not.toHaveBeenCalled();
+    expect(gitService.rebase).not.toHaveBeenCalled();
+  });
+
+  it('preserves conflict files from cherry-pick results', async () => {
+    gitService.cherryPick.mockResolvedValue({ success: false, conflict: true, conflictFiles: ['x'] });
+
+    const response = await handleStandardGitBridgeMessage({
+      id: 'cherry-pick',
+      type: 'api:git/cherry-pick',
+      payload: { directory: '/repo', hash: 'a'.repeat(40) },
+    });
+
+    expect(response).toEqual({
+      id: 'cherry-pick',
+      type: 'api:git/cherry-pick',
+      success: true,
+      data: { success: false, conflict: true, conflictFiles: ['x'] },
+    });
+  });
+
+  it('routes cherry-pick and revert abort and continue operations', async () => {
+    gitService.abortCherryPick.mockResolvedValue({ success: true });
+    gitService.continueCherryPick.mockResolvedValue({ success: false, conflict: true, conflictFiles: ['a.ts'] });
+    gitService.abortRevert.mockResolvedValue({ success: true });
+    gitService.continueRevert.mockResolvedValue({ success: true, conflict: false });
+
+    await expect(handleStandardGitBridgeMessage({
+      id: 'cherry-abort', type: 'api:git/cherry-pick/abort', payload: { directory: '/repo' },
+    })).resolves.toEqual({ id: 'cherry-abort', type: 'api:git/cherry-pick/abort', success: true, data: { success: true } });
+    await expect(handleStandardGitBridgeMessage({
+      id: 'cherry-continue', type: 'api:git/cherry-pick/continue', payload: { directory: '/repo' },
+    })).resolves.toEqual({ id: 'cherry-continue', type: 'api:git/cherry-pick/continue', success: true, data: { success: false, conflict: true, conflictFiles: ['a.ts'] } });
+    await expect(handleStandardGitBridgeMessage({
+      id: 'revert-abort', type: 'api:git/revert/abort', payload: { directory: '/repo' },
+    })).resolves.toEqual({ id: 'revert-abort', type: 'api:git/revert/abort', success: true, data: { success: true } });
+    await expect(handleStandardGitBridgeMessage({
+      id: 'revert-continue', type: 'api:git/revert/continue', payload: { directory: '/repo' },
+    })).resolves.toEqual({ id: 'revert-continue', type: 'api:git/revert/continue', success: true, data: { success: true, conflict: false } });
+
+    const missingDirectory = await handleStandardGitBridgeMessage({
+      id: 'missing-directory', type: 'api:git/cherry-pick/abort', payload: {},
+    });
+    expect(missingDirectory).toEqual({ id: 'missing-directory', type: 'api:git/cherry-pick/abort', success: false, error: 'Directory is required' });
+  });
+
+  it('preserves typed git-service errors for bridge error mapping', async () => {
+    gitService.resetToCommit.mockRejectedValue(new Error('[reset_hard_dirty] Cannot hard reset'));
+    gitService.merge.mockRejectedValue(new Error('[operation_in_progress] Cannot merge'));
+
+    await expect(handleStandardGitBridgeMessage({
+      id: 'reset', type: 'api:git/reset-to-commit',
+      payload: { directory: '/repo', hash: 'a'.repeat(40), mode: 'hard' },
+    })).rejects.toThrow(/^\[reset_hard_dirty\]/);
+    await expect(handleStandardGitBridgeMessage({
+      id: 'merge', type: 'api:git/merge', payload: { directory: '/repo', branch: 'main' },
+    })).rejects.toThrow(/^\[operation_in_progress\]/);
   });
 
   it('requires full object ids for VS Code tag and commit file payloads', async () => {

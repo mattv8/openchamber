@@ -98,6 +98,8 @@ interface HistoryCommitRowProps {
   hoverDetailsCache?: GitCommitHoverDetailsCache | null;
   onConflict?: (result: { conflict: boolean; conflictFiles?: string[]; operation: 'cherry-pick' | 'revert' | 'merge' | 'rebase' }) => void;
   onActionSuccess?: () => void;
+  actionsBusy?: boolean;
+  onActionsBusyChange?: (busy: boolean) => void;
   commitComparison?: GitCommitComparison;
   commitDetailsController?: GitCommitDetailsControllerLike;
   selectedChangedFilePath?: string | null;
@@ -161,6 +163,8 @@ export const HistoryCommitRow = React.memo(({
   hoverDetailsCache = null,
   onConflict,
   onActionSuccess,
+  actionsBusy = false,
+  onActionsBusyChange,
   commitComparison,
   commitDetailsController,
   selectedChangedFilePath = null,
@@ -189,6 +193,7 @@ export const HistoryCommitRow = React.memo(({
   const [newBranchName, setNewBranchName] = React.useState('');
   const [newTagName, setNewTagName] = React.useState('');
   const [pendingAction, setPendingAction] = React.useState<PendingAction | null>(null);
+  const [forceResetPrompt, setForceResetPrompt] = React.useState(false);
   const supportsCreateTag = Boolean(runtimeApis.git?.createGitTag);
   const githubUrl = React.useMemo(
     () => buildGitHubCommitUrl(hoverRemoteUrl, getEntryHash(entry)),
@@ -237,95 +242,103 @@ export const HistoryCommitRow = React.memo(({
 
   const changedFilesSnapshot = commitDetailsController && commitComparison ? controllerSnapshot : fallbackSnapshot;
 
-  const handleCheckout = async () => {
-    if (!directory) return;
-    setActionLoading('checkout');
-      try {
-        await git.checkoutCommit(directory, getEntryHash(entry));
-      toast.success(t('gitView.history.actions.detachedHead'));
-      onActionSuccess?.();
+  // Helper to coordinate row and panel busy state for all mutating actions
+  const runAction = async (name: string, operation: () => Promise<void>): Promise<void> => {
+    if (actionLoading !== null || actionsBusy) return;
+    setActionLoading(name);
+    onActionsBusyChange?.(true);
+    try {
+      await operation();
     } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      // Normalize non-Error throwables to Error for typed helper
+      const err = e instanceof Error ? e : new Error(String(e));
+      const message = git.decodeGitErrorMessage(err, t('errorBoundary.state.unknownError'));
+      toast.error(message);
     } finally {
       setActionLoading(null);
+      onActionsBusyChange?.(false);
     }
+  };
+
+  const handleCheckout = async () => {
+    if (!directory) return;
+    await runAction('checkout', async () => {
+      await git.checkoutCommit(directory, getEntryHash(entry));
+      toast.success(t('gitView.history.actions.detachedHead'));
+      onActionSuccess?.();
+    });
   };
 
   const handleCreateBranch = async () => {
     if (!directory || !newBranchName.trim()) return;
-    setActionLoading('createBranch');
-    try {
+    await runAction('createBranch', async () => {
       await git.createBranch(directory, newBranchName.trim(), getEntryHash(entry));
       setBranchDialogOpen(false);
       setNewBranchName('');
       onActionSuccess?.();
-    } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : String(e));
-    } finally {
-      setActionLoading(null);
-    }
+    });
   };
 
   const handleCreateTag = async () => {
     if (!directory || !newTagName.trim() || !supportsCreateTag) return;
-    setActionLoading('createTag');
-    try {
+    await runAction('createTag', async () => {
       await git.createGitTag(directory, newTagName.trim(), getEntryHash(entry));
       toast.success(t('gitView.toast.tagCreated', { name: newTagName.trim() }));
       setTagDialogOpen(false);
       setNewTagName('');
       onActionSuccess?.();
-    } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : String(e));
-    } finally {
-      setActionLoading(null);
-    }
+    });
   };
 
   const handleCherryPick = async () => {
     if (!directory) return;
-    setActionLoading('cherryPick');
-    try {
+    await runAction('cherryPick', async () => {
       const result = await git.cherryPick(directory, getEntryHash(entry));
       if (result.conflict) {
         onConflict?.({ conflict: true, conflictFiles: result.conflictFiles, operation: 'cherry-pick' });
       } else {
         onActionSuccess?.();
       }
-    } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : String(e));
-    } finally {
-      setActionLoading(null);
-    }
+    });
   };
 
   const handleRevert = async () => {
     if (!directory) return;
-    setActionLoading('revert');
-    try {
+    await runAction('revert', async () => {
       const result = await git.revertCommit(directory, getEntryHash(entry));
       if (result.conflict) {
         onConflict?.({ conflict: true, conflictFiles: result.conflictFiles, operation: 'revert' });
       } else {
         onActionSuccess?.();
       }
-    } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : String(e));
-    } finally {
-      setActionLoading(null);
-    }
+    });
+  };
+
+  const handleResetImpl = async (mode: 'soft' | 'mixed' | 'hard', force = false) => {
+    if (!directory) throw new Error('No directory');
+    await git.resetToCommit(directory, getEntryHash(entry), mode, force);
+    onActionSuccess?.();
   };
 
   const handleReset = async (mode: 'soft' | 'mixed' | 'hard', force = false) => {
-    if (!directory || actionLoading !== null) return;
+    if (!directory || actionLoading !== null || actionsBusy) return;
     setActionLoading('reset');
+    onActionsBusyChange?.(true);
     try {
-      await git.resetToCommit(directory, getEntryHash(entry), mode, force);
-      onActionSuccess?.();
+      await handleResetImpl(mode, force);
     } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : String(e));
+      // Normalize non-Error throwables to Error for typed helpers
+      const err = e instanceof Error ? e : new Error(String(e));
+      if (mode === 'hard' && !force && git.isResetHardDirtyError(err)) {
+        setForceResetPrompt(true);
+      } else {
+        // Show decoded error message (strip runtime prefix codes)
+        const message = git.decodeGitErrorMessage(err, t('errorBoundary.state.unknownError'));
+        toast.error(message);
+      }
     } finally {
       setActionLoading(null);
+      onActionsBusyChange?.(false);
     }
   };
 
@@ -342,42 +355,32 @@ export const HistoryCommitRow = React.memo(({
       case 'rebase':     return handleRebase();
       case 'resetSoft':  return handleReset('soft');
       case 'resetMixed': return handleReset('mixed');
-      case 'resetHard':  return handleReset('hard', true); // force=true: user already confirmed
+      case 'resetHard':  return handleReset('hard', false); // force=false: check for dirty working tree
     }
   };
 
   const handleMerge = async () => {
     if (!directory) return;
-    setActionLoading('merge');
-    try {
+    await runAction('merge', async () => {
       const result = await git.merge(directory, { branch: getEntryHash(entry) });
       if (result.conflict) {
         onConflict?.({ conflict: true, conflictFiles: result.conflictFiles, operation: 'merge' });
       } else {
         onActionSuccess?.();
       }
-    } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : String(e));
-    } finally {
-      setActionLoading(null);
-    }
+    });
   };
 
   const handleRebase = async () => {
     if (!directory) return;
-    setActionLoading('rebase');
-    try {
+    await runAction('rebase', async () => {
       const result = await git.rebase(directory, { onto: getEntryHash(entry) });
       if (result.conflict) {
         onConflict?.({ conflict: true, conflictFiles: result.conflictFiles, operation: 'rebase' });
       } else {
         onActionSuccess?.();
       }
-    } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : String(e));
-    } finally {
-      setActionLoading(null);
-    }
+    });
   };
 
   const handleOpenChanges = React.useCallback(() => {
@@ -615,36 +618,36 @@ changedFilesLabel={t(
           {directory ? (
             <>
               <ContextMenuSeparator />
-              <ContextMenuItem onClick={() => setPendingAction('checkout')} disabled={actionLoading !== null}>
+              <ContextMenuItem onClick={() => setPendingAction('checkout')} disabled={actionLoading !== null || actionsBusy}>
                 {t('gitView.history.actions.checkoutDetached')}
               </ContextMenuItem>
-              <ContextMenuItem onClick={() => setBranchDialogOpen(true)} disabled={actionLoading !== null}>
-                {t('gitView.history.actions.createBranchEllipsis')}
-              </ContextMenuItem>
-              {supportsCreateTag ? (
-                <ContextMenuItem onClick={() => setTagDialogOpen(true)} disabled={actionLoading !== null}>
-                  {t('gitView.history.actions.createTagEllipsis')}
-                </ContextMenuItem>
-              ) : null}
-              <ContextMenuItem onClick={() => setPendingAction('cherryPick')} disabled={actionLoading !== null}>
-                {t('gitView.history.actions.cherryPick')}
-              </ContextMenuItem>
-              <ContextMenuItem onClick={() => setPendingAction('revert')} disabled={actionLoading !== null}>
+               <ContextMenuItem onClick={() => setBranchDialogOpen(true)} disabled={actionLoading !== null || actionsBusy}>
+                 {t('gitView.history.actions.createBranchEllipsis')}
+               </ContextMenuItem>
+               {supportsCreateTag ? (
+                 <ContextMenuItem onClick={() => setTagDialogOpen(true)} disabled={actionLoading !== null || actionsBusy}>
+                   {t('gitView.history.actions.createTagEllipsis')}
+                 </ContextMenuItem>
+               ) : null}
+               <ContextMenuItem onClick={() => setPendingAction('cherryPick')} disabled={actionLoading !== null || actionsBusy}>
+                 {t('gitView.history.actions.cherryPick')}
+               </ContextMenuItem>
+               <ContextMenuItem onClick={() => setPendingAction('revert')} disabled={actionLoading !== null || actionsBusy}>
                 {t('gitView.history.actions.revert')}
               </ContextMenuItem>
-              {(['soft', 'mixed', 'hard'] as const).map((mode) => (
-                <ContextMenuItem
-                  key={mode}
-                  onClick={() => setPendingAction(RESET_PENDING_ACTIONS[mode])}
-                  disabled={actionLoading !== null}
-                >
-                  {t(RESET_LABELS[mode])}
-                </ContextMenuItem>
-              ))}
-              <ContextMenuItem onClick={() => setPendingAction('merge')} disabled={actionLoading !== null}>
-                {t('gitView.history.actions.merge')}
-              </ContextMenuItem>
-              <ContextMenuItem onClick={() => setPendingAction('rebase')} disabled={actionLoading !== null}>
+               {(['soft', 'mixed', 'hard'] as const).map((mode) => (
+                 <ContextMenuItem
+                   key={mode}
+                   onClick={() => setPendingAction(RESET_PENDING_ACTIONS[mode])}
+                   disabled={actionLoading !== null || actionsBusy}
+                 >
+                   {t(RESET_LABELS[mode])}
+                 </ContextMenuItem>
+               ))}
+               <ContextMenuItem onClick={() => setPendingAction('merge')} disabled={actionLoading !== null || actionsBusy}>
+                 {t('gitView.history.actions.merge')}
+               </ContextMenuItem>
+               <ContextMenuItem onClick={() => setPendingAction('rebase')} disabled={actionLoading !== null || actionsBusy}>
                 {t('gitView.history.actions.rebase')}
               </ContextMenuItem>
             </>
@@ -696,10 +699,10 @@ changedFilesLabel={t(
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="ghost" size="sm" onClick={() => setPendingAction(null)} disabled={actionLoading !== null}>
-              {t('gitView.history.actions.cancelButton')}
-            </Button>
-            <Button variant="destructive" size="sm" onClick={() => void confirmPendingAction()} disabled={actionLoading !== null}>
+             <Button variant="ghost" size="sm" onClick={() => setPendingAction(null)} disabled={actionLoading !== null || actionsBusy}>
+               {t('gitView.history.actions.cancelButton')}
+             </Button>
+             <Button variant="destructive" size="sm" onClick={() => void confirmPendingAction()} disabled={actionLoading !== null || actionsBusy}>
               {actionLoading !== null ? <Icon name="loader-4" className="mr-1 size-3 animate-spin" /> : null}
               {pendingAction === 'resetHard'
                 ? t('gitView.history.actions.resetHardConfirmButton')
@@ -729,11 +732,11 @@ changedFilesLabel={t(
             }}
             placeholder={t('gitView.history.actions.createBranchPlaceholder')}
           />
-          <DialogFooter>
-            <Button variant="ghost" size="sm" onClick={() => { setBranchDialogOpen(false); setNewBranchName(''); }} disabled={actionLoading !== null}>
-              {t('gitView.history.actions.cancelButton')}
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => void handleCreateBranch()} disabled={!newBranchName.trim() || actionLoading !== null}>
+           <DialogFooter>
+             <Button variant="ghost" size="sm" onClick={() => { setBranchDialogOpen(false); setNewBranchName(''); }} disabled={actionLoading !== null || actionsBusy}>
+               {t('gitView.history.actions.cancelButton')}
+             </Button>
+             <Button variant="outline" size="sm" onClick={() => void handleCreateBranch()} disabled={!newBranchName.trim() || actionLoading !== null || actionsBusy}>
               {actionLoading === 'createBranch' ? <Icon name="loader-4" className="mr-1 size-3 animate-spin" /> : null}
               {t('gitView.history.actions.createBranchConfirm')}
             </Button>
@@ -761,19 +764,42 @@ changedFilesLabel={t(
             }}
             placeholder={t('gitView.history.actions.createTagPlaceholder')}
           />
-          <DialogFooter>
-            <Button variant="ghost" size="sm" onClick={() => { setTagDialogOpen(false); setNewTagName(''); }} disabled={actionLoading !== null}>
-              {t('gitView.history.actions.cancelButton')}
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => void handleCreateTag()} disabled={!newTagName.trim() || actionLoading !== null}>
+           <DialogFooter>
+             <Button variant="ghost" size="sm" onClick={() => { setTagDialogOpen(false); setNewTagName(''); }} disabled={actionLoading !== null || actionsBusy}>
+               {t('gitView.history.actions.cancelButton')}
+             </Button>
+             <Button variant="outline" size="sm" onClick={() => void handleCreateTag()} disabled={!newTagName.trim() || actionLoading !== null || actionsBusy}>
               {actionLoading === 'createTag' ? <Icon name="loader-4" className="mr-1 size-3 animate-spin" /> : null}
               {t('gitView.history.actions.createTagConfirm')}
             </Button>
           </DialogFooter>
-        </DialogContent>
-      </Dialog>
+         </DialogContent>
+       </Dialog>
 
-      {isExpanded && (
+       <Dialog open={forceResetPrompt} onOpenChange={(open) => { if (!open) setForceResetPrompt(false); }}>
+         <DialogContent showCloseButton={false} className="max-w-sm gap-4">
+           <DialogHeader>
+             <DialogTitle>{t('gitView.history.actions.resetHardDirtyTitle')}</DialogTitle>
+             <DialogDescription>
+               {t('gitView.history.actions.resetHardDirtyDescription')}
+             </DialogDescription>
+           </DialogHeader>
+           <DialogFooter>
+              <Button variant="ghost" size="sm" onClick={() => setForceResetPrompt(false)} disabled={actionLoading !== null || actionsBusy}>
+                {t('gitView.history.actions.cancelButton')}
+              </Button>
+              <Button variant="destructive" size="sm" onClick={() => {
+                setForceResetPrompt(false);
+                void handleReset('hard', true);
+              }} disabled={actionLoading !== null || actionsBusy}>
+               {actionLoading === 'reset' ? <Icon name="loader-4" className="mr-1 size-3 animate-spin" /> : null}
+               {t('gitView.history.actions.resetHardDirtyConfirmButton')}
+             </Button>
+           </DialogFooter>
+         </DialogContent>
+       </Dialog>
+
+       {isExpanded && (
         <div id={detailsContentId} className="border-t border-border/40 px-3 pb-2 pl-8">
           {activeComparisonLabel ? (
             <div className="mb-2 flex items-center gap-2 border-b border-border/30 py-2">

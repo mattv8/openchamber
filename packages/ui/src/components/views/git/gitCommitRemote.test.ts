@@ -41,6 +41,46 @@ describe('selectGitCommitHoverRemote', () => {
   test('returns null when no remote has a usable url', () => {
     expect(selectGitCommitHoverRemote([{ name: 'origin', fetchUrl: '', pushUrl: '' }])).toBeNull();
   });
+
+  test('prefers a GitHub remote over a non-GitHub origin remote', () => {
+    const remotes: GitRemote[] = [
+      {
+        name: 'origin',
+        fetchUrl: 'https://gitlab.com/owner/repo.git',
+        pushUrl: '',
+      },
+      {
+        name: 'upstream',
+        fetchUrl: 'https://github.com/other/repo.git',
+        pushUrl: '',
+      },
+    ];
+
+    expect(selectGitCommitHoverRemote(remotes)).toEqual({
+      name: 'upstream',
+      url: 'https://github.com/other/repo.git',
+    });
+  });
+
+  test('prefers origin when it is a GitHub remote over another GitHub remote', () => {
+    const remotes: GitRemote[] = [
+      {
+        name: 'origin',
+        fetchUrl: 'https://github.com/owner/repo.git',
+        pushUrl: '',
+      },
+      {
+        name: 'upstream',
+        fetchUrl: 'https://github.com/other/repo.git',
+        pushUrl: '',
+      },
+    ];
+
+    expect(selectGitCommitHoverRemote(remotes)).toEqual({
+      name: 'origin',
+      url: 'https://github.com/owner/repo.git',
+    });
+  });
 });
 
 describe('buildGitHubCommitUrl', () => {

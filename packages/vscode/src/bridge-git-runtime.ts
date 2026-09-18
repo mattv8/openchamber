@@ -30,6 +30,14 @@ const isOptionLikeGitName = (value: string | undefined): value is string => (
   typeof value === 'string' && (value.startsWith('-') || value.includes('\0'))
 );
 
+const isSafeGitRef = (value: string | undefined): value is string => (
+  Boolean(value) &&
+  (value?.length ?? 0) <= 512 &&
+  !value?.startsWith('-') &&
+  !/[\s\0~^:?*\[\\]/.test(value ?? '') &&
+  !value?.includes('..')
+);
+
 const asRecord = (payload: unknown): BridgePayloadRecord => (
   payload && typeof payload === 'object' ? payload as BridgePayloadRecord : {}
 );
@@ -169,8 +177,8 @@ export async function handleStandardGitBridgeMessage(message: BridgeMessageInput
       }
 
       if (normalizedMethod === 'POST') {
-        if (!name) {
-          return { id, type, success: false, error: 'Branch name is required' };
+        if (!isSafeGitRef(name) || (startPoint !== undefined && !isSafeGitRef(startPoint))) {
+          return { id, type, success: false, error: 'Invalid ref' };
         }
         const result = await gitService.createBranch(directory!, name, startPoint);
         return { id, type, success: true, data: result };
@@ -532,6 +540,9 @@ export async function handleStandardGitBridgeMessage(message: BridgeMessageInput
       if (!onto) {
         return { id, type, success: false, error: 'onto is required' };
       }
+      if (!isSafeGitRef(onto)) {
+        return { id, type, success: false, error: 'Invalid ref' };
+      }
       const result = await gitService.rebase(directory!, { onto });
       return { id, type, success: true, data: result };
     }
@@ -550,6 +561,9 @@ export async function handleStandardGitBridgeMessage(message: BridgeMessageInput
       if (dirError) return dirError;
       if (!branch) {
         return { id, type, success: false, error: 'branch is required' };
+      }
+      if (!isSafeGitRef(branch)) {
+        return { id, type, success: false, error: 'Invalid ref' };
       }
       const result = await gitService.merge(directory!, { branch });
       return { id, type, success: true, data: result };
@@ -601,6 +615,20 @@ export async function handleStandardGitBridgeMessage(message: BridgeMessageInput
       return { id, type, success: true, data: result };
     }
 
+    case 'api:git/cherry-pick/abort': {
+      const directory = readString(payloadRecord, 'directory');
+      const dirError = requireDirectory(id, type, directory);
+      if (dirError) return dirError;
+      return { id, type, success: true, data: await gitService.abortCherryPick(directory!) };
+    }
+
+    case 'api:git/cherry-pick/continue': {
+      const directory = readString(payloadRecord, 'directory');
+      const dirError = requireDirectory(id, type, directory);
+      if (dirError) return dirError;
+      return { id, type, success: true, data: await gitService.continueCherryPick(directory!) };
+    }
+
     case 'api:git/revert-commit': {
       const { directory, hash } = (payload || {}) as { directory?: string; hash?: string };
       const dirError = requireDirectory(id, type, directory);
@@ -610,6 +638,20 @@ export async function handleStandardGitBridgeMessage(message: BridgeMessageInput
       }
       const result = await gitService.revertCommit(directory!, hash);
       return { id, type, success: true, data: result };
+    }
+
+    case 'api:git/revert/abort': {
+      const directory = readString(payloadRecord, 'directory');
+      const dirError = requireDirectory(id, type, directory);
+      if (dirError) return dirError;
+      return { id, type, success: true, data: await gitService.abortRevert(directory!) };
+    }
+
+    case 'api:git/revert/continue': {
+      const directory = readString(payloadRecord, 'directory');
+      const dirError = requireDirectory(id, type, directory);
+      if (dirError) return dirError;
+      return { id, type, success: true, data: await gitService.continueRevert(directory!) };
     }
 
     case 'api:git/reset-to-commit': {

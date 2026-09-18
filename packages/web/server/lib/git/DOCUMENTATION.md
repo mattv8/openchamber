@@ -105,13 +105,17 @@ mount these Git panels and keeps its separate extension-host Git implementation.
 - `getCommitFileDiff(directory, { commitHash, parentHash, originalPath, modifiedPath })`: Reads only requested before/after blob sides. Null sides are authoritative; missing objects fail and combined blob size is capped at 8 MiB.
 - `getCommitFileDiff(directory, hash, filePath, isBinary)`: Legacy positional compatibility form for existing commit walkthrough callers.
 
-### Merge and Rebase Operations
+### Merge, rebase, cherry-pick, and revert operations
 - `rebase(directory, options)`: Start a rebase onto a target branch.
 - `abortRebase(directory)`: Abort an in-progress rebase.
 - `continueRebase(directory)`: Continue a rebase after conflict resolution.
 - `merge(directory, options)`: Merge a branch into current branch.
 - `abortMerge(directory)`: Abort an in-progress merge.
 - `continueMerge(directory)`: Continue a merge after conflict resolution.
+- `abortCherryPick(directory)`: Abort an in-progress cherry-pick.
+- `continueCherryPick(directory)`: Continue a cherry-pick after conflict resolution.
+- `abortRevert(directory)`: Abort an in-progress revert.
+- `continueRevert(directory)`: Continue a revert after conflict resolution.
 - `getConflictDetails(directory)`: Get detailed conflict information including operation type, unmerged files, and diff.
 
 ### Stash Operations
@@ -151,6 +155,14 @@ The following functions are internal helpers used by exported functions:
 - `diffStats`: Scope-aware per-file line stats, `{ staged, working }`. `staged` is HEAD → index (`git diff --cached --numstat`), `working` is index → working tree (`git diff --numstat`). A partially staged file appears in both maps with its own scope's counts; the two are never summed together. Untracked and working-tree-added files are counted into `working`; files added to the index are counted into `staged`.
 - `mergeInProgress`: Object with `{ head, message }` if merge in progress.
 - `rebaseInProgress`: Object with `{ headName, onto }` if rebase in progress.
+- `cherryPickInProgress`: Object with `{ head }` if a cherry-pick is in progress.
+- `revertInProgress`: Object with `{ head }` if a revert is in progress.
+
+### Operation routes and errors
+- `POST /api/git/cherry-pick/abort` and `POST /api/git/revert/abort` return `{ success }`.
+- `POST /api/git/cherry-pick/continue` and `POST /api/git/revert/continue` return `{ success, conflict, conflictFiles? }`.
+- Git operations that cannot start because another operation is active return 409 with `{ error, code: 'operation_in_progress' }`.
+- A hard reset with uncommitted changes and no `force` returns 409 with `{ error, code: 'reset_hard_dirty' }`.
 
 ### Branches Response
 - `all`: Local branches plus every branch each reachable remote reports via `ls-remote --heads`, formatted as `remotes/<remote>/<branch>`. This is a union: local remote-tracking refs deleted on the remote are pruned, and branches that exist on the remote without a local tracking ref (never fetched) are still included, so a freshly pushed branch appears without requiring a fetch. A remote that fails to answer keeps its locally known branches in the list: "we could not ask" must not be reported as "these branches are gone", because callers use this list to decide whether a base branch exists at all.

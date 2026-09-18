@@ -487,6 +487,22 @@ export const createVSCodeGitAPI = (): GitAPI => ({
     return sendBridgeMessage<{ success: boolean }>('api:git/merge/abort', { directory });
   },
 
+  abortCherryPick: async (directory: string): Promise<{ success: boolean }> => {
+    return sendBridgeMessage<{ success: boolean }>('api:git/cherry-pick/abort', { directory });
+  },
+
+  continueCherryPick: async (directory: string): Promise<{ success: boolean; conflict: boolean; conflictFiles?: string[] }> => {
+    return sendBridgeMessage<{ success: boolean; conflict: boolean; conflictFiles?: string[] }>('api:git/cherry-pick/continue', { directory });
+  },
+
+  abortRevert: async (directory: string): Promise<{ success: boolean }> => {
+    return sendBridgeMessage<{ success: boolean }>('api:git/revert/abort', { directory });
+  },
+
+  continueRevert: async (directory: string): Promise<{ success: boolean; conflict: boolean; conflictFiles?: string[] }> => {
+    return sendBridgeMessage<{ success: boolean; conflict: boolean; conflictFiles?: string[] }>('api:git/revert/continue', { directory });
+  },
+
   continueRebase: async (directory: string): Promise<{ success: boolean; conflict: boolean; conflictFiles?: string[] }> => {
     return sendBridgeMessage<{ success: boolean; conflict: boolean; conflictFiles?: string[] }>('api:git/rebase/continue', { directory });
   },
