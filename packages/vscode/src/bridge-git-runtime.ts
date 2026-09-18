@@ -34,7 +34,7 @@ const isSafeGitRef = (value: string | undefined): value is string => (
   Boolean(value) &&
   (value?.length ?? 0) <= 512 &&
   !value?.startsWith('-') &&
-  !/[\s\0~^:?*\[\\]/.test(value ?? '') &&
+  !/[\s\0~^:?*[\\]/.test(value ?? '') &&
   !value?.includes('..')
 );
 
