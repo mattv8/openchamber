@@ -2638,17 +2638,7 @@ export async function getGitRangeDiff(
     return { diff: '' };
   }
 
-  let resolvedBase = baseRef;
-  try {
-    const verify = await execGit(['rev-parse', '--verify', `refs/remotes/origin/${baseRef}`], directory);
-    if (verify.exitCode === 0) {
-      resolvedBase = `origin/${baseRef}`;
-    }
-  } catch {
-    // ignore
-  }
-
-  const args = ['diff', '--no-color', `-U${Math.max(0, contextLines)}`, `${resolvedBase}...${headRef}`, '--', filePath];
+  const args = ['diff', '--no-color', `-U${Math.max(0, contextLines)}`, `${baseRef}...${headRef}`, '--', filePath];
   const result = await execGit(args, directory);
   return { diff: result.stdout };
 }
@@ -2667,17 +2657,7 @@ export async function getGitRangeFiles(
     return [];
   }
 
-  let resolvedBase = baseRef;
-  try {
-    const verify = await execGit(['rev-parse', '--verify', `refs/remotes/origin/${baseRef}`], directory);
-    if (verify.exitCode === 0) {
-      resolvedBase = `origin/${baseRef}`;
-    }
-  } catch {
-    // ignore
-  }
-
-  const args = ['diff', '--name-only', `${resolvedBase}...${headRef}`];
+  const args = ['diff', '--name-only', `${baseRef}...${headRef}`];
   const result = await execGit(args, directory);
   if (result.exitCode !== 0) return [];
   return String(result.stdout || '')

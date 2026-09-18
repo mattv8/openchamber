@@ -19,6 +19,8 @@ mock.module('./bridge-git-process-runtime', () => ({ execGit: executeGit }));
 const {
   cherryPick,
   classifyGitOperationFailure,
+  getGitRangeDiff,
+  getGitRangeFiles,
   merge,
   parseUnmergedFiles,
   rebase,
@@ -66,6 +68,23 @@ describe('VS Code git operation helpers', () => {
     ));
 
     await expect(resetToCommit('/repo', 'a'.repeat(40), 'hard')).rejects.toThrow(/^\[reset_hard_dirty\]/);
+  });
+
+  it('passes an unqualified range base literally when origin has a matching ref', async () => {
+    executeGit.mockImplementation(async (args) => (
+      args.join('\0') === 'rev-parse\0--verify\0refs/remotes/origin/main'
+        ? { stdout: 'a'.repeat(40), stderr: '', exitCode: 0 }
+        : { stdout: '', stderr: '', exitCode: 0 }
+    ));
+
+    await getGitRangeDiff('/repo', 'main', 'feature', 'src/file.ts');
+    await getGitRangeFiles('/repo', 'main', 'feature');
+
+    const calls = executeGit.mock.calls.map(([args]) => args);
+    expect(calls).toContainEqual(['diff', '--no-color', '-U3', 'main...feature', '--', 'src/file.ts']);
+    expect(calls).toContainEqual(['diff', '--name-only', 'main...feature']);
+    expect(calls).not.toContainEqual(['diff', '--no-color', '-U3', 'origin/main...feature', '--', 'src/file.ts']);
+    expect(calls).not.toContainEqual(['diff', '--name-only', 'origin/main...feature']);
   });
 
   it('blocks every starting operation while a merge marker exists', async () => {
