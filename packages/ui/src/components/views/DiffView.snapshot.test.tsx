@@ -713,8 +713,11 @@ describe('DiffView snapshot source', () => {
         { path: 'src/other.ts', index: '', working_dir: 'M' },
       ],
       {
-        'src/target.ts': { insertions: 2, deletions: 1 },
-        'src/other.ts': { insertions: 4, deletions: 3 },
+        working: {
+          'src/target.ts': { insertions: 2, deletions: 1 },
+          'src/other.ts': { insertions: 4, deletions: 3 },
+        },
+        staged: {},
       },
     );
     isGitRepoState = true;
@@ -741,7 +744,10 @@ describe('DiffView snapshot source', () => {
         { path: 'src/other.ts', index: '', working_dir: 'M' },
       ],
       {
-        'src/other.ts': { insertions: 4, deletions: 3 },
+        working: {
+          'src/other.ts': { insertions: 4, deletions: 3 },
+        },
+        staged: {},
       },
     );
     isGitRepoState = true;
