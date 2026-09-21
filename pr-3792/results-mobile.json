@@ -1,0 +1,374 @@
+[
+  {
+    "version": "baseline",
+    "formFactor": "mobile",
+    "entry": "/assets/main-1tz4ZiKT.js",
+    "sessionID": "ses_f3a4f5dbaffecEooBZJDrZu9l2",
+    "keptMessageID": "msg_0c5b0a2490011b4YhA5sfUQ6cH",
+    "removedMessageID": "msg_0c5b0a24f0015O8rTRO58seQCS",
+    "serverIDs": [
+      "msg_0c5b0a2490011b4YhA5sfUQ6cH"
+    ],
+    "finalStaleBubblePresent": true,
+    "fixture": {
+      "armedMessageID": "msg_0c5b0a24f0015O8rTRO58seQCS",
+      "connections": {
+        "active": 1,
+        "opened": 2,
+        "closed": 1
+      },
+      "reconnections": 1,
+      "dropped": [
+        {
+          "timestamp": "2026-09-21T20:38:13.026Z",
+          "messageID": "msg_0c5b0a24f0015O8rTRO58seQCS",
+          "eventType": "message.removed"
+        }
+      ],
+      "httpSessionMessageRequests": {
+        "count": 2,
+        "responses": [
+          {
+            "timestamp": "2026-09-21T20:38:08.506Z",
+            "sessionID": "ses_f3a4f5dbaffecEooBZJDrZu9l2",
+            "status": 200,
+            "messageIDs": [
+              "msg_0c5b0a2490011b4YhA5sfUQ6cH",
+              "msg_0c5b0a24f0015O8rTRO58seQCS"
+            ]
+          },
+          {
+            "timestamp": "2026-09-21T20:38:16.868Z",
+            "sessionID": "ses_f3a4f5dbaffecEooBZJDrZu9l2",
+            "status": 200,
+            "messageIDs": [
+              "msg_0c5b0a2490011b4YhA5sfUQ6cH"
+            ]
+          }
+        ]
+      },
+      "sseFallbacks": 0
+    },
+    "diagnostics": [
+      {
+        "operation": "bootstrap.sessions.roots",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 79.19999998807907,
+        "retryCount": 0,
+        "recordCount": 1,
+        "at": 1790023083393
+      },
+      {
+        "operation": "bootstrap.sessions.roots",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 54.80000001192093,
+        "retryCount": 0,
+        "recordCount": 0,
+        "at": 1790023083401
+      },
+      {
+        "operation": "bootstrap.sessions.all",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 9.399999976158142,
+        "retryCount": 0,
+        "recordCount": 1,
+        "at": 1790023083402
+      },
+      {
+        "operation": "bootstrap.directory",
+        "caller": "action-demand",
+        "queuedMs": 41,
+        "outcome": "complete",
+        "durationMs": 91.10000002384186,
+        "at": 1790023083405
+      },
+      {
+        "operation": "bootstrap.sessions.all",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 10.899999976158142,
+        "retryCount": 0,
+        "recordCount": 0,
+        "at": 1790023083412
+      },
+      {
+        "operation": "bootstrap.directory",
+        "caller": "action-demand",
+        "queuedMs": 0,
+        "outcome": "complete",
+        "durationMs": 65.89999997615814,
+        "at": 1790023083412
+      },
+      {
+        "operation": "bootstrap.environment",
+        "caller": "action-demand",
+        "outcome": "complete",
+        "durationMs": 125.69999998807907,
+        "at": 1790023083440
+      },
+      {
+        "operation": "bootstrap.environment",
+        "caller": "action-demand",
+        "outcome": "complete",
+        "durationMs": 125.5,
+        "at": 1790023083472
+      },
+      {
+        "operation": "global-sessions.all",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 6.699999988079071,
+        "retryCount": 0,
+        "recordCount": 1,
+        "at": 1790023087172
+      },
+      {
+        "operation": "session-messages.page",
+        "caller": "initial-page",
+        "requestLimit": 50,
+        "cursorPresent": false,
+        "outcome": "complete",
+        "durationMs": 23.80000001192093,
+        "retryCount": 0,
+        "recordCount": 2,
+        "at": 1790023088506
+      },
+      {
+        "operation": "session-messages.initial",
+        "caller": "initial",
+        "outcome": "complete",
+        "durationMs": 53.69999998807907,
+        "retryCount": 0,
+        "recordCount": 2,
+        "at": 1790023088536
+      },
+      {
+        "operation": "session-messages.visible",
+        "caller": "selected-session",
+        "outcome": "complete",
+        "durationMs": 20.100000023841858,
+        "recordCount": 2,
+        "at": 1790023088539
+      },
+      {
+        "operation": "bootstrap.sessions.all",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 6.5,
+        "retryCount": 0,
+        "recordCount": 1,
+        "at": 1790023093323
+      },
+      {
+        "operation": "session-messages.page",
+        "caller": "refresh",
+        "requestLimit": 30,
+        "cursorPresent": false,
+        "outcome": "complete",
+        "durationMs": 19.900000035762787,
+        "retryCount": 0,
+        "recordCount": 1,
+        "at": 1790023096869
+      },
+      {
+        "operation": "session-messages.refresh",
+        "caller": "refresh",
+        "outcome": "complete",
+        "durationMs": 21,
+        "retryCount": 0,
+        "recordCount": 1,
+        "at": 1790023096870
+      }
+    ],
+    "consoleErrors": []
+  },
+  {
+    "version": "fixed",
+    "formFactor": "mobile",
+    "entry": "/assets/main-BxFj1hI5.js",
+    "sessionID": "ses_f3a4f0b50ffeWuS1y2bAzEnyIm",
+    "keptMessageID": "msg_0c5b0f4b8001CdfB4pylx01bBP",
+    "removedMessageID": "msg_0c5b0f4cf001CLUukKVvAHVj50",
+    "serverIDs": [
+      "msg_0c5b0f4b8001CdfB4pylx01bBP"
+    ],
+    "finalStaleBubblePresent": false,
+    "fixture": {
+      "armedMessageID": "msg_0c5b0f4cf001CLUukKVvAHVj50",
+      "connections": {
+        "active": 1,
+        "opened": 2,
+        "closed": 1
+      },
+      "reconnections": 1,
+      "dropped": [
+        {
+          "timestamp": "2026-09-21T20:38:34.275Z",
+          "messageID": "msg_0c5b0f4cf001CLUukKVvAHVj50",
+          "eventType": "message.removed"
+        }
+      ],
+      "httpSessionMessageRequests": {
+        "count": 2,
+        "responses": [
+          {
+            "timestamp": "2026-09-21T20:38:29.663Z",
+            "sessionID": "ses_f3a4f0b50ffeWuS1y2bAzEnyIm",
+            "status": 200,
+            "messageIDs": [
+              "msg_0c5b0f4b8001CdfB4pylx01bBP",
+              "msg_0c5b0f4cf001CLUukKVvAHVj50"
+            ]
+          },
+          {
+            "timestamp": "2026-09-21T20:38:38.162Z",
+            "sessionID": "ses_f3a4f0b50ffeWuS1y2bAzEnyIm",
+            "status": 200,
+            "messageIDs": [
+              "msg_0c5b0f4b8001CdfB4pylx01bBP"
+            ]
+          }
+        ]
+      },
+      "sseFallbacks": 0
+    },
+    "diagnostics": [
+      {
+        "operation": "bootstrap.sessions.roots",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 132.60000002384186,
+        "retryCount": 0,
+        "recordCount": 2,
+        "at": 1790023104645
+      },
+      {
+        "operation": "bootstrap.sessions.roots",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 96.60000002384186,
+        "retryCount": 0,
+        "recordCount": 0,
+        "at": 1790023104652
+      },
+      {
+        "operation": "bootstrap.sessions.all",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 7.899999976158142,
+        "retryCount": 0,
+        "recordCount": 2,
+        "at": 1790023104653
+      },
+      {
+        "operation": "bootstrap.directory",
+        "caller": "action-demand",
+        "queuedMs": 60,
+        "outcome": "complete",
+        "durationMs": 144.0999999642372,
+        "at": 1790023104656
+      },
+      {
+        "operation": "bootstrap.sessions.all",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 14.300000011920929,
+        "retryCount": 0,
+        "recordCount": 0,
+        "at": 1790023104666
+      },
+      {
+        "operation": "bootstrap.directory",
+        "caller": "action-demand",
+        "queuedMs": 0,
+        "outcome": "complete",
+        "durationMs": 111.19999998807907,
+        "at": 1790023104666
+      },
+      {
+        "operation": "bootstrap.environment",
+        "caller": "action-demand",
+        "outcome": "complete",
+        "durationMs": 178.5,
+        "at": 1790023104691
+      },
+      {
+        "operation": "bootstrap.environment",
+        "caller": "action-demand",
+        "outcome": "complete",
+        "durationMs": 177,
+        "at": 1790023104732
+      },
+      {
+        "operation": "global-sessions.all",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 5.800000011920929,
+        "retryCount": 0,
+        "recordCount": 2,
+        "at": 1790023108348
+      },
+      {
+        "operation": "session-messages.page",
+        "caller": "initial-page",
+        "requestLimit": 50,
+        "cursorPresent": false,
+        "outcome": "complete",
+        "durationMs": 18.69999998807907,
+        "retryCount": 0,
+        "recordCount": 2,
+        "at": 1790023109671
+      },
+      {
+        "operation": "session-messages.initial",
+        "caller": "initial",
+        "outcome": "complete",
+        "durationMs": 45.39999997615814,
+        "retryCount": 0,
+        "recordCount": 2,
+        "at": 1790023109698
+      },
+      {
+        "operation": "session-messages.visible",
+        "caller": "selected-session",
+        "outcome": "complete",
+        "durationMs": 18.599999964237213,
+        "recordCount": 2,
+        "at": 1790023109701
+      },
+      {
+        "operation": "bootstrap.sessions.all",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 5.799999952316284,
+        "retryCount": 0,
+        "recordCount": 2,
+        "at": 1790023114521
+      },
+      {
+        "operation": "session-messages.page",
+        "caller": "refresh",
+        "requestLimit": 30,
+        "cursorPresent": false,
+        "outcome": "complete",
+        "durationMs": 7.399999976158142,
+        "retryCount": 0,
+        "recordCount": 1,
+        "at": 1790023118163
+      },
+      {
+        "operation": "session-messages.refresh",
+        "caller": "refresh",
+        "outcome": "complete",
+        "durationMs": 15.300000011920929,
+        "retryCount": 0,
+        "recordCount": 1,
+        "at": 1790023118171
+      }
+    ],
+    "consoleErrors": []
+  }
+]

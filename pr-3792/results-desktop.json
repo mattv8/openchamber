@@ -1,0 +1,336 @@
+[
+  {
+    "version": "baseline",
+    "formFactor": "desktop",
+    "entry": "/assets/main-1tz4ZiKT.js",
+    "sessionID": "ses_f3a4ffc14ffeQfN2PMmZgmPEHE",
+    "keptMessageID": "msg_0c5b003ef0017X7AC9MPV4e1Mk",
+    "removedMessageID": "msg_0c5b003f5001MnH7fciplZX7ge",
+    "serverIDs": [
+      "msg_0c5b003ef0017X7AC9MPV4e1Mk"
+    ],
+    "finalStaleBubblePresent": true,
+    "fixture": {
+      "armedMessageID": "msg_0c5b003f5001MnH7fciplZX7ge",
+      "connections": {
+        "active": 1,
+        "opened": 2,
+        "closed": 1
+      },
+      "reconnections": 1,
+      "dropped": [
+        {
+          "timestamp": "2026-09-21T20:37:31.595Z",
+          "messageID": "msg_0c5b003f5001MnH7fciplZX7ge",
+          "eventType": "message.removed"
+        }
+      ],
+      "httpSessionMessageRequests": {
+        "count": 2,
+        "responses": [
+          {
+            "timestamp": "2026-09-21T20:37:26.984Z",
+            "sessionID": "ses_f3a4ffc14ffeQfN2PMmZgmPEHE",
+            "status": 200,
+            "messageIDs": [
+              "msg_0c5b003ef0017X7AC9MPV4e1Mk",
+              "msg_0c5b003f5001MnH7fciplZX7ge"
+            ]
+          },
+          {
+            "timestamp": "2026-09-21T20:37:35.585Z",
+            "sessionID": "ses_f3a4ffc14ffeQfN2PMmZgmPEHE",
+            "status": 200,
+            "messageIDs": [
+              "msg_0c5b003ef0017X7AC9MPV4e1Mk"
+            ]
+          }
+        ]
+      },
+      "sseFallbacks": 0
+    },
+    "diagnostics": [
+      {
+        "operation": "bootstrap.sessions.roots",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 232.10000002384186,
+        "retryCount": 0,
+        "recordCount": 1,
+        "at": 1790023043494
+      },
+      {
+        "operation": "global-sessions.all",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 114.30000001192093,
+        "retryCount": 0,
+        "recordCount": 1,
+        "at": 1790023043539
+      },
+      {
+        "operation": "bootstrap.sessions.all",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 120,
+        "retryCount": 0,
+        "recordCount": 1,
+        "at": 1790023043615
+      },
+      {
+        "operation": "bootstrap.directory",
+        "caller": "action-demand",
+        "queuedMs": 193,
+        "outcome": "complete",
+        "durationMs": 356.0999999642372,
+        "at": 1790023043618
+      },
+      {
+        "operation": "bootstrap.environment",
+        "caller": "action-demand",
+        "outcome": "complete",
+        "durationMs": 447.30000001192093,
+        "at": 1790023043710
+      },
+      {
+        "operation": "session-messages.page",
+        "caller": "initial-page",
+        "requestLimit": 100,
+        "cursorPresent": false,
+        "outcome": "complete",
+        "durationMs": 54.799999952316284,
+        "retryCount": 0,
+        "recordCount": 2,
+        "at": 1790023047032
+      },
+      {
+        "operation": "session-prefetch",
+        "caller": "prefetch",
+        "outcome": "complete",
+        "durationMs": 93.89999997615814,
+        "retryCount": 0,
+        "recordCount": 2,
+        "at": 1790023047071
+      },
+      {
+        "operation": "session-messages.visible",
+        "caller": "selected-session",
+        "outcome": "complete",
+        "durationMs": 27.799999952316284,
+        "recordCount": 2,
+        "at": 1790023047076
+      },
+      {
+        "operation": "bootstrap.sessions.all",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 5.300000011920929,
+        "retryCount": 0,
+        "recordCount": 1,
+        "at": 1790023048271
+      },
+      {
+        "operation": "session-messages.page",
+        "caller": "refresh",
+        "requestLimit": 30,
+        "cursorPresent": false,
+        "outcome": "complete",
+        "durationMs": 6.300000011920929,
+        "retryCount": 0,
+        "recordCount": 1,
+        "at": 1790023055585
+      },
+      {
+        "operation": "session-messages.refresh",
+        "caller": "refresh",
+        "outcome": "complete",
+        "durationMs": 7,
+        "retryCount": 0,
+        "recordCount": 1,
+        "at": 1790023055586
+      }
+    ],
+    "consoleErrors": []
+  },
+  {
+    "version": "fixed",
+    "formFactor": "desktop",
+    "entry": "/assets/main-BxFj1hI5.js",
+    "sessionID": "ses_f3a4fac7dffeK3DuLRlilzkwcb",
+    "keptMessageID": "msg_0c5b0538e001sQdFefvQrcXbFe",
+    "removedMessageID": "msg_0c5b053a2001y4ZuNtoSsIofpb",
+    "serverIDs": [
+      "msg_0c5b0538e001sQdFefvQrcXbFe"
+    ],
+    "finalStaleBubblePresent": false,
+    "fixture": {
+      "armedMessageID": "msg_0c5b053a2001y4ZuNtoSsIofpb",
+      "connections": {
+        "active": 1,
+        "opened": 2,
+        "closed": 1
+      },
+      "reconnections": 1,
+      "dropped": [
+        {
+          "timestamp": "2026-09-21T20:37:51.794Z",
+          "messageID": "msg_0c5b053a2001y4ZuNtoSsIofpb",
+          "eventType": "message.removed"
+        }
+      ],
+      "httpSessionMessageRequests": {
+        "count": 3,
+        "responses": [
+          {
+            "timestamp": "2026-09-21T20:37:47.174Z",
+            "sessionID": "ses_f3a4fac7dffeK3DuLRlilzkwcb",
+            "status": 200,
+            "messageIDs": [
+              "msg_0c5b0538e001sQdFefvQrcXbFe",
+              "msg_0c5b053a2001y4ZuNtoSsIofpb"
+            ]
+          },
+          {
+            "timestamp": "2026-09-21T20:37:47.515Z",
+            "sessionID": "ses_f3a4ffc14ffeQfN2PMmZgmPEHE",
+            "status": 200,
+            "messageIDs": [
+              "msg_0c5b003ef0017X7AC9MPV4e1Mk"
+            ]
+          },
+          {
+            "timestamp": "2026-09-21T20:37:55.647Z",
+            "sessionID": "ses_f3a4fac7dffeK3DuLRlilzkwcb",
+            "status": 200,
+            "messageIDs": [
+              "msg_0c5b0538e001sQdFefvQrcXbFe"
+            ]
+          }
+        ]
+      },
+      "sseFallbacks": 0
+    },
+    "diagnostics": [
+      {
+        "operation": "bootstrap.sessions.roots",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 153.5,
+        "retryCount": 0,
+        "recordCount": 2,
+        "at": 1790023063622
+      },
+      {
+        "operation": "global-sessions.all",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 37.10000002384186,
+        "retryCount": 0,
+        "recordCount": 2,
+        "at": 1790023063650
+      },
+      {
+        "operation": "bootstrap.sessions.all",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 82.10000002384186,
+        "retryCount": 0,
+        "recordCount": 2,
+        "at": 1790023063704
+      },
+      {
+        "operation": "bootstrap.directory",
+        "caller": "action-demand",
+        "queuedMs": 196,
+        "outcome": "complete",
+        "durationMs": 241.30000001192093,
+        "at": 1790023063709
+      },
+      {
+        "operation": "bootstrap.environment",
+        "caller": "action-demand",
+        "outcome": "complete",
+        "durationMs": 317.2000000476837,
+        "at": 1790023063786
+      },
+      {
+        "operation": "session-messages.page",
+        "caller": "initial-page",
+        "requestLimit": 100,
+        "cursorPresent": false,
+        "outcome": "complete",
+        "durationMs": 34.80000001192093,
+        "retryCount": 0,
+        "recordCount": 2,
+        "at": 1790023067204
+      },
+      {
+        "operation": "session-prefetch",
+        "caller": "prefetch",
+        "outcome": "complete",
+        "durationMs": 65,
+        "retryCount": 0,
+        "recordCount": 2,
+        "at": 1790023067234
+      },
+      {
+        "operation": "session-messages.visible",
+        "caller": "selected-session",
+        "outcome": "complete",
+        "durationMs": 21.5,
+        "recordCount": 2,
+        "at": 1790023067236
+      },
+      {
+        "operation": "session-messages.page",
+        "caller": "initial-page",
+        "requestLimit": 100,
+        "cursorPresent": false,
+        "outcome": "complete",
+        "durationMs": 5.199999988079071,
+        "retryCount": 0,
+        "recordCount": 1,
+        "at": 1790023067516
+      },
+      {
+        "operation": "session-prefetch",
+        "caller": "prefetch",
+        "outcome": "complete",
+        "durationMs": 5.400000035762787,
+        "retryCount": 0,
+        "recordCount": 1,
+        "at": 1790023067516
+      },
+      {
+        "operation": "bootstrap.sessions.all",
+        "caller": "initial-page",
+        "outcome": "complete",
+        "durationMs": 5.400000035762787,
+        "retryCount": 0,
+        "recordCount": 2,
+        "at": 1790023068477
+      },
+      {
+        "operation": "session-messages.page",
+        "caller": "refresh",
+        "requestLimit": 30,
+        "cursorPresent": false,
+        "outcome": "complete",
+        "durationMs": 6.5,
+        "retryCount": 0,
+        "recordCount": 1,
+        "at": 1790023075647
+      },
+      {
+        "operation": "session-messages.refresh",
+        "caller": "refresh",
+        "outcome": "complete",
+        "durationMs": 16.599999964237213,
+        "retryCount": 0,
+        "recordCount": 1,
+        "at": 1790023075657
+      }
+    ],
+    "consoleErrors": []
+  }
+]
