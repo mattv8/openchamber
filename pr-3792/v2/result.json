@@ -1,0 +1,294 @@
+{
+  "baselineSHA": "83ec4fbde25a9d141785716bebe0371925f895b5",
+  "prSHA": "0325357654bb189fb0263e9343b95f9c5799d9e1",
+  "actions": [
+    {
+      "atMs": 10049,
+      "label": "Create isolated session",
+      "x": 1393,
+      "y": 82
+    },
+    {
+      "atMs": 17067,
+      "label": "Baseline: open session picker",
+      "x": 41,
+      "y": 80
+    },
+    {
+      "atMs": 18479,
+      "label": "Baseline: search session",
+      "x": 302.5,
+      "y": 134
+    },
+    {
+      "atMs": 20779,
+      "label": "Baseline: select fixture session",
+      "x": 302.5,
+      "y": 337.5
+    },
+    {
+      "atMs": 23584,
+      "label": "PR: open session picker",
+      "x": 634,
+      "y": 80
+    },
+    {
+      "atMs": 24996,
+      "label": "PR: search session",
+      "x": 895.5,
+      "y": 134
+    },
+    {
+      "atMs": 27330,
+      "label": "PR: select fixture session",
+      "x": 895.5,
+      "y": 337.5
+    },
+    {
+      "atMs": 30130,
+      "label": "Send original turn",
+      "x": 1393,
+      "y": 125
+    },
+    {
+      "atMs": 37239,
+      "label": "Send completed follow-up",
+      "x": 1393,
+      "y": 168
+    },
+    {
+      "atMs": 45304,
+      "label": "Delete follow-up on real server",
+      "x": 1393,
+      "y": 211
+    },
+    {
+      "atMs": 53434,
+      "label": "Reconnect both normal event streams",
+      "x": 1393,
+      "y": 254
+    }
+  ],
+  "state": {
+    "sessionID": "ses_f3a236d27ffePeiQ6QcIkKJSso",
+    "first": {
+      "userID": "msg_0c5dce1930013vNT3x0k3Ddeb7",
+      "assistantID": "msg_0c5dce1a1001XN9LlGIp1U3dMZ"
+    },
+    "followUp": {
+      "userID": "msg_0c5dcfd42001hu4QtKPAPstqqR",
+      "assistantID": "msg_0c5dcfd4e001Az3jGX34tkk1pz"
+    },
+    "transcript": [
+      {
+        "id": "msg_0c5dce1930013vNT3x0k3Ddeb7",
+        "role": "user",
+        "text": "First streamed turn for the recovery evidence."
+      },
+      {
+        "id": "msg_0c5dce1a1001XN9LlGIp1U3dMZ",
+        "role": "assistant",
+        "text": "The original reply is complete and remains in history."
+      }
+    ],
+    "requests": [
+      {
+        "at": "2026-09-21T21:26:45.584Z",
+        "method": "POST",
+        "path": ":4612/__fixture/reconnect",
+        "status": 200,
+        "detail": ""
+      },
+      {
+        "at": "2026-09-21T21:26:45.584Z",
+        "method": "POST",
+        "path": ":4611/__fixture/reconnect",
+        "status": 200,
+        "detail": ""
+      },
+      {
+        "at": "2026-09-21T21:26:37.465Z",
+        "method": "GET",
+        "path": "/session/ses_f3a236d27ffePeiQ6QcIkKJSso/message",
+        "status": 200,
+        "detail": ""
+      },
+      {
+        "at": "2026-09-21T21:26:37.462Z",
+        "method": "DELETE",
+        "path": "/session/ses_f3a236d27ffePeiQ6QcIkKJSso/message/msg_0c5dcfd42001hu4QtKPAPstqqR",
+        "status": 200,
+        "detail": ""
+      },
+      {
+        "at": "2026-09-21T21:26:37.459Z",
+        "method": "DELETE",
+        "path": "/session/ses_f3a236d27ffePeiQ6QcIkKJSso/message/msg_0c5dcfd4e001Az3jGX34tkk1pz",
+        "status": 200,
+        "detail": ""
+      },
+      {
+        "at": "2026-09-21T21:26:37.457Z",
+        "method": "POST",
+        "path": ":4612/__fixture/arm",
+        "status": 200,
+        "detail": ""
+      },
+      {
+        "at": "2026-09-21T21:26:37.457Z",
+        "method": "POST",
+        "path": ":4611/__fixture/arm",
+        "status": 200,
+        "detail": ""
+      },
+      {
+        "at": "2026-09-21T21:26:37.456Z",
+        "method": "GET",
+        "path": "/session/ses_f3a236d27ffePeiQ6QcIkKJSso/message",
+        "status": 200,
+        "detail": ""
+      },
+      {
+        "at": "2026-09-21T21:26:31.660Z",
+        "method": "GET",
+        "path": "/session/ses_f3a236d27ffePeiQ6QcIkKJSso/message",
+        "status": 200,
+        "detail": ""
+      },
+      {
+        "at": "2026-09-21T21:26:31.653Z",
+        "method": "POST",
+        "path": "/session/ses_f3a236d27ffePeiQ6QcIkKJSso/message",
+        "status": 200,
+        "detail": ""
+      },
+      {
+        "at": "2026-09-21T21:26:24.315Z",
+        "method": "GET",
+        "path": "/session/ses_f3a236d27ffePeiQ6QcIkKJSso/message",
+        "status": 200,
+        "detail": ""
+      },
+      {
+        "at": "2026-09-21T21:26:24.305Z",
+        "method": "POST",
+        "path": "/session/ses_f3a236d27ffePeiQ6QcIkKJSso/message",
+        "status": 200,
+        "detail": ""
+      },
+      {
+        "at": "2026-09-21T21:26:02.131Z",
+        "method": "GET",
+        "path": "/session/ses_f3a236d27ffePeiQ6QcIkKJSso/message",
+        "status": 200,
+        "detail": ""
+      },
+      {
+        "at": "2026-09-21T21:26:02.124Z",
+        "method": "POST",
+        "path": "/session",
+        "status": 200,
+        "detail": ""
+      }
+    ],
+    "error": null,
+    "directory": "<isolated fixture directory>",
+    "proxies": [
+      {
+        "armedMessageID": "msg_0c5dcfd42001hu4QtKPAPstqqR",
+        "armedMessageIDs": [
+          "msg_0c5dcfd42001hu4QtKPAPstqqR",
+          "msg_0c5dcfd4e001Az3jGX34tkk1pz"
+        ],
+        "connections": {
+          "active": 1,
+          "opened": 2,
+          "closed": 1
+        },
+        "reconnections": 1,
+        "dropped": [
+          {
+            "timestamp": "2026-09-21T21:26:37.460Z",
+            "messageID": "msg_0c5dcfd4e001Az3jGX34tkk1pz",
+            "eventType": "message.removed"
+          },
+          {
+            "timestamp": "2026-09-21T21:26:37.462Z",
+            "messageID": "msg_0c5dcfd42001hu4QtKPAPstqqR",
+            "eventType": "message.removed"
+          }
+        ],
+        "httpSessionMessageRequests": {
+          "count": 2,
+          "responses": [
+            {
+              "timestamp": "2026-09-21T21:26:12.929Z",
+              "sessionID": "ses_f3a236d27ffePeiQ6QcIkKJSso",
+              "status": 200,
+              "messageIDs": []
+            },
+            {
+              "timestamp": "2026-09-21T21:26:45.926Z",
+              "sessionID": "ses_f3a236d27ffePeiQ6QcIkKJSso",
+              "status": 200,
+              "messageIDs": [
+                "msg_0c5dce1930013vNT3x0k3Ddeb7",
+                "msg_0c5dce1a1001XN9LlGIp1U3dMZ"
+              ]
+            }
+          ]
+        },
+        "sseFallbacks": 0
+      },
+      {
+        "armedMessageID": "msg_0c5dcfd42001hu4QtKPAPstqqR",
+        "armedMessageIDs": [
+          "msg_0c5dcfd42001hu4QtKPAPstqqR",
+          "msg_0c5dcfd4e001Az3jGX34tkk1pz"
+        ],
+        "connections": {
+          "active": 1,
+          "opened": 2,
+          "closed": 1
+        },
+        "reconnections": 1,
+        "dropped": [
+          {
+            "timestamp": "2026-09-21T21:26:37.460Z",
+            "messageID": "msg_0c5dcfd4e001Az3jGX34tkk1pz",
+            "eventType": "message.removed"
+          },
+          {
+            "timestamp": "2026-09-21T21:26:37.462Z",
+            "messageID": "msg_0c5dcfd42001hu4QtKPAPstqqR",
+            "eventType": "message.removed"
+          }
+        ],
+        "httpSessionMessageRequests": {
+          "count": 2,
+          "responses": [
+            {
+              "timestamp": "2026-09-21T21:26:19.474Z",
+              "sessionID": "ses_f3a236d27ffePeiQ6QcIkKJSso",
+              "status": 200,
+              "messageIDs": []
+            },
+            {
+              "timestamp": "2026-09-21T21:26:45.930Z",
+              "sessionID": "ses_f3a236d27ffePeiQ6QcIkKJSso",
+              "status": 200,
+              "messageIDs": [
+                "msg_0c5dce1930013vNT3x0k3Ddeb7",
+                "msg_0c5dce1a1001XN9LlGIp1U3dMZ"
+              ]
+            }
+          ]
+        },
+        "sseFallbacks": 0
+      }
+    ]
+  },
+  "baselineRetainsFollowUp": true,
+  "prRemovesFollowUp": true,
+  "exceptions": []
+}
