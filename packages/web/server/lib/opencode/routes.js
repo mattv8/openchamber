@@ -12,6 +12,19 @@ import { settingsSurfaceOf } from './settings-files.js';
 import { parseWebSearchSelection } from './config-v2.js';
 import { getWebSearchSource, setWarmingEnabled, setWebSearchSelection } from './websearch-config.js';
 
+export class OpenCodeServiceRestartRequiredError extends Error {
+  constructor() {
+    super('CLI installed; restart shared service to use the new OpenCode binary.');
+    this.name = 'OpenCodeServiceRestartRequiredError';
+    this.code = 'OPENCODE_SHARED_SERVICE_RESTART_REQUIRED';
+  }
+}
+
+export const ensureInstalledOpenCodeVersionIsActive = ({ installedVersion, connectedVersion }) => {
+  if (installedVersion === connectedVersion) return;
+  throw new OpenCodeServiceRestartRequiredError();
+};
+
 export const registerOpenCodeRoutes = (app, dependencies) => {
   const {
     crypto,
@@ -124,7 +137,10 @@ export const registerOpenCodeRoutes = (app, dependencies) => {
       const installed = await installInFlight;
       if (!installed) return res.status(409).json({ success: false, error: 'Automatic OpenCode v2 installation is unavailable for this runtime.' });
       return res.json({ success: true });
-    } catch {
+    } catch (error) {
+      if (error?.code === 'OPENCODE_SHARED_SERVICE_RESTART_REQUIRED') {
+        return res.status(409).json({ success: false, code: error.code, error: error.message });
+      }
       return res.status(500).json({ success: false, error: 'OpenCode v2 installation or restart failed. Retry or use the installation guide.' });
     }
   });

@@ -6,6 +6,7 @@ import { registerManagedProcess, unregisterManagedProcess, reapOrphanedProcesses
 import { applyProviderEnvAliases } from './provider-env-aliases.js';
 import { recordStartupPerformance } from './startup-performance.js';
 import { topUpV1Migration } from './v1-migration-topup.js';
+import { connectSharedOpenCode as connectSharedOpenCodeAdapter } from './shared-service.js';
 
 const parsePositiveInt = (value, fallback) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -135,17 +136,86 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
     buildManagedOpenCodePath,
     getManagedOpenCodeShellEnvSnapshot,
     getManagedOpenCodeEnv = async () => ({}),
+    getSharedOpenCodeEnv = async () => ({}),
+    setOpenCodeAuthState = () => {},
+    connectSharedOpenCode = connectSharedOpenCodeAdapter,
     getActiveSessionCount = () => 0,
-    reapManagedOrphanedProcesses = reapOrphanedProcesses,
     getWarmupDirectories = async () => [],
     onOpenCodeRestarted = null,
     managedStartupTimeoutMs = 30_000,
     now = Date.now,
     topUpV1SessionMigration = topUpV1Migration,
     checkOpenCodeBinary = requireOpenCodeV2,
+    reapManagedOrphanedProcesses = reapOrphanedProcesses,
   } = deps;
 
   let managedPreflight = null;
+  let sharedConnectionPromise = null;
+  let sharedStartupController = null;
+
+  const establishSharedConnection = async (signal, allowStart = true) => {
+    if (state.isShuttingDown) throw new Error('OpenCode connection cancelled during shutdown');
+    signal.throwIfAborted();
+    await applyOpencodeBinaryFromSettings({ strict: true });
+    const resolvedBinary = ensureOpencodeCliEnv();
+    const launch = resolveManagedOpenCodeLaunchSpec(resolvedBinary);
+    const preflight = checkOpenCodeBinary(launch, { signal });
+    managedPreflight = preflight.then(() => true, () => false);
+    await preflight;
+    signal.throwIfAborted();
+    let sharedToolEnv = {};
+    try {
+      sharedToolEnv = await getSharedOpenCodeEnv();
+    } catch {
+      console.warn('[OpenCode] Could not publish OpenChamber tools to the shared service; continuing without tools.');
+    }
+    const { url, password } = await connectSharedOpenCode({
+      launch,
+      env: stripAppImageArgv0Leak(applyProviderEnvAliases({
+        ...(getManagedOpenCodeShellEnvSnapshot?.() || {}),
+        ...process.env,
+        ...sharedToolEnv,
+        PATH: buildManagedOpenCodePath?.() || buildAugmentedPath?.() || process.env.PATH,
+      })),
+      cwd: state.openCodeWorkingDirectory,
+      signal,
+      allowStart,
+    });
+    signal.throwIfAborted();
+    if (state.isShuttingDown) throw new Error('OpenCode connection cancelled during shutdown');
+    const endpoint = new URL(url);
+    const port = Number.parseInt(endpoint.port, 10);
+    if (!Number.isFinite(port) || port <= 0) throw new Error('The shared OpenCode service did not report a port.');
+    setOpenCodeAuthState(password, 'shared');
+    state.openCodeProcess = null;
+    state.openCodeBaseUrl = endpoint.origin;
+    setOpenCodePort(port);
+    setDetectedOpenCodeApiPrefix('');
+    state.isExternalOpenCode = false;
+    state.isSharedOpenCode = true;
+    state.isOpenCodeReady = true;
+    state.lastOpenCodeError = null;
+    state.openCodeNotReadySince = 0;
+    syncToHmrState();
+    return null;
+  };
+  const connectToSharedOpenCode = (allowStart = true) => {
+    if (sharedConnectionPromise) return sharedConnectionPromise;
+    sharedStartupController = new AbortController();
+    sharedConnectionPromise = establishSharedConnection(sharedStartupController.signal, allowStart).finally(() => {
+      sharedConnectionPromise = null;
+      sharedStartupController = null;
+    });
+    return sharedConnectionPromise;
+  };
+  const cancelSharedStartup = async () => {
+    sharedStartupController?.abort(new Error('OpenCode connection cancelled during shutdown'));
+    await sharedConnectionPromise?.catch(() => {});
+  };
+  const shouldUseSharedService = () => !env.ENV_SKIP_OPENCODE_START
+    && !env.ENV_CONFIGURED_OPENCODE_HOST
+    && !env.ENV_CONFIGURED_OPENCODE_PORT
+    && !env.ENV_CONFIGURED_OPENCODE_HOSTNAME_EXPLICIT;
 
   const killProcessOnPortWin32 = (port) => {
     try {
@@ -592,7 +662,7 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
   };
 
   const probeOpenCodeHealthDetailed = async () => {
-    if (!state.openCodeProcess || !state.openCodePort) {
+    if ((!state.openCodeProcess && !state.isSharedOpenCode) || !state.openCodePort) {
       return {
         healthy: false,
         failure: {
@@ -899,6 +969,16 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
         return;
       }
 
+      if (state.isSharedOpenCode || shouldUseSharedService()) {
+        await connectToSharedOpenCode();
+        try {
+          onOpenCodeRestarted?.({ interruptBusySessions: false });
+        } catch (error) {
+          console.warn('Failed to rebind event stream after OpenCode restart:', error?.message ?? error);
+        }
+        return;
+      }
+
       captureRestartDiagnostics(reason);
       const portToKill = state.openCodePort;
 
@@ -1072,7 +1152,7 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
     // written config is on disk but the running server keeps serving its old,
     // startup-cached config until the user restarts it themselves. Report this
     // honestly so callers don't claim the change is live.
-    const external = state.isExternalOpenCode === true;
+    const external = state.isExternalOpenCode === true || state.isSharedOpenCode === true;
 
     try {
       await waitForOpenCodeReady();
@@ -1103,24 +1183,10 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
     let unsupportedExternalVersion = null;
     recordStartupPerformance('opencode.bootstrap.start');
     try {
-      // Before doing anything, reap any OpenCode process WE spawned in a prior
-      // run that was orphaned by a crash/hard-exit. Verified + scoped to our own
-      // pids, so it never touches a live instance's or the user's own server.
-      try {
-        const orphanReapStartedAt = performance.now();
-        const { reaped } = await reapManagedOrphanedProcesses({ log: (msg) => console.log(msg) });
-        recordStartupPerformance('opencode.orphan-reap.ready', {
-          durationMs: performance.now() - orphanReapStartedAt,
-          totalDurationMs: performance.now() - bootstrapStartedAt,
-        });
-        if (reaped > 0) console.log(`[lifecycle] startup reaped ${reaped} orphaned OpenCode process(es)`);
-      } catch (error) {
-        console.warn('[lifecycle] orphan reap failed:', error?.message ?? error);
-      }
-
       syncFromHmrState();
       if (await isOpenCodeProcessHealthy()) {
         console.log(`[HMR] Reusing existing OpenCode process on port ${state.openCodePort}`);
+        if (state.isSharedOpenCode) await connectToSharedOpenCode(false);
       } else if (env.ENV_SKIP_OPENCODE_START && env.ENV_EFFECTIVE_PORT) {
         const label = env.ENV_CONFIGURED_OPENCODE_HOST ? env.ENV_CONFIGURED_OPENCODE_HOST.origin : `http://localhost:${env.ENV_EFFECTIVE_PORT}`;
         console.log(`Using external OpenCode server at ${label} (skip-start mode)`);
@@ -1156,25 +1222,33 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
         syncToHmrState();
         throw new UnsupportedOpenCodeVersionError(unsupportedExternalVersion);
       } else {
-        // We never auto-attach to an arbitrary pre-existing OpenCode instance.
-        // Attaching to an external server requires explicit opt-in via env
-        // (OPENCODE_HOST / OPENCODE_PORT / OPENCODE_SKIP_START), handled by the
-        // branches above. Without that opt-in we always start our OWN managed
-        // instance on a freshly-allocated port. A blind probe of the default
-        // port 4096 used to hijack a user's separately-running OpenCode (e.g.
-        // the OpenCode desktop app), coupling our lifecycle to theirs and
-        // breaking init against an unexpected server version/config.
-        if (env.ENV_EFFECTIVE_PORT) {
-          console.log(`Using OpenCode port from environment: ${env.ENV_EFFECTIVE_PORT}`);
+        if (env.ENV_CONFIGURED_OPENCODE_HOST) {
+          state.openCodeBaseUrl = env.ENV_CONFIGURED_OPENCODE_HOST?.origin ?? null;
           setOpenCodePort(env.ENV_EFFECTIVE_PORT);
+          state.isExternalOpenCode = true;
+          state.isSharedOpenCode = false;
+          syncToHmrState();
+          throw new Error('Configured OpenCode endpoint is unavailable; shared service discovery is not used for explicit external configuration.');
+        }
+        // Upgrading from an older OpenChamber can leave one of our private
+        // children orphaned. The registry verifies ownership before reaping;
+        // shared service processes are never registered here.
+        try {
+          await reapManagedOrphanedProcesses({ log: (message) => console.log(message) });
+        } catch (error) {
+          console.warn('[lifecycle] orphan reap failed:', error?.message ?? error);
+        }
+        if (shouldUseSharedService()) {
+          // Mark intent before discovery so an initial cold-start timeout still
+          // leaves discovery-only monitoring active.
+          state.isSharedOpenCode = true;
+          syncToHmrState();
+          await connectToSharedOpenCode();
         } else {
-          state.openCodePort = null;
+          console.log('[OpenCode] Using legacy private managed server for explicit port or hostname pin.');
+          state.openCodeProcess = await startOpenCode();
           syncToHmrState();
         }
-
-        state.lastOpenCodeError = null;
-        state.openCodeProcess = await startOpenCode();
-        syncToHmrState();
       }
       await waitForOpenCodePort();
       try {
@@ -1319,12 +1393,32 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
   };
 
   const runHealthCheckCycle = async (source) => {
-    if (!state.openCodeProcess || state.isShuttingDown || state.isRestartingOpenCode) return;
+    if ((!state.openCodeProcess && !state.isSharedOpenCode) || state.isShuttingDown || state.isRestartingOpenCode) return;
     if (healthCheckCyclePromise) return healthCheckCyclePromise;
 
     healthCheckCyclePromise = (async () => {
       const healthResult = await probeOpenCodeHealth();
       if (!healthResult.healthy) {
+        if (state.isSharedOpenCode) {
+          lastHealthProbeResult = null;
+          const checkedAt = now();
+          if (lastCountedHealthFailureAt && checkedAt - lastCountedHealthFailureAt < healthFailureCountIntervalMs) return;
+          lastCountedHealthFailureAt = checkedAt;
+          consecutiveHealthFailures += 1;
+          if (consecutiveHealthFailures < HEALTH_CHECK_MAX_CONSECUTIVE_FAILURES) return;
+          state.isOpenCodeReady = false;
+          state.openCodeNotReadySince ||= now();
+          consecutiveHealthFailures = 0;
+          try {
+            // Discovery cannot stop the service. Busy state from an unreachable
+            // old endpoint must not prevent finding its replacement.
+            await connectToSharedOpenCode(false);
+            onOpenCodeRestarted?.({ interruptBusySessions: false });
+          } catch (error) {
+            state.lastOpenCodeError = error instanceof Error ? error.message : String(error);
+          }
+          return;
+        }
         if (!isManagedOpenCodeProcessAlive()) {
           console.log(`[lifecycle] ${source} health check: OpenCode process exited, restarting...`);
           consecutiveHealthFailures = 0;
@@ -1364,6 +1458,11 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
         );
       } else {
         resetHealthFailureState();
+        if (state.isSharedOpenCode && !state.isShuttingDown) {
+          state.isOpenCodeReady = true;
+          state.openCodeNotReadySince = 0;
+          state.lastOpenCodeError = null;
+        }
       }
     })().finally(() => {
       healthCheckCyclePromise = null;
@@ -1398,6 +1497,7 @@ export const createOpenCodeLifecycleRuntime = (deps) => {
   };
 
   return {
+    cancelSharedStartup,
     getManagedOpenCodePreflight: async () => {
       const preflight = managedPreflight;
       if (!preflight || state.isExternalOpenCode || state.isShuttingDown) return false;

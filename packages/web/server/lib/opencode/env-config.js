@@ -71,6 +71,7 @@ export const resolveOpenCodeEnvConfig = (options = {}) => {
   // OPENCODE_HOST takes precedence over OPENCODE_PORT when both are set
   const effectivePort = configuredOpenCodeHost?.port ?? configuredOpenCodePort;
 
+  let configuredOpenCodeHostnameExplicit = false;
   const configuredOpenCodeHostname = (() => {
     const raw = env.OPENCHAMBER_OPENCODE_HOSTNAME;
     if (typeof raw !== 'string') {
@@ -91,6 +92,7 @@ export const resolveOpenCodeEnvConfig = (options = {}) => {
       );
       return '127.0.0.1';
     }
+    configuredOpenCodeHostnameExplicit = true;
     return trimmed;
   })();
 
@@ -99,5 +101,6 @@ export const resolveOpenCodeEnvConfig = (options = {}) => {
     configuredOpenCodeHost,
     effectivePort,
     configuredOpenCodeHostname,
+    configuredOpenCodeHostnameExplicit,
   };
 };

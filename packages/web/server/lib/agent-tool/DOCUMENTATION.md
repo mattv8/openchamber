@@ -18,15 +18,23 @@ the user can want independently:
   action when the setting is off, so a stale plugin cannot keep paging.
 
 Both default to on, are toggled in Settings → General → OpenCode CLI, and take
-effect in the running OpenCode within a couple of seconds — OpenChamber rewrites
-the managed config file OpenCode watches (see
-`lib/opencode/managed-config-file.js`). Installs where the user's own
-environment sets `OPENCODE_CONFIG` fall back to `OPENCODE_CONFIG_CONTENT` and
-still need a restart for a toggle. Each tool carries only its own actions and
-only the parameters those actions use, so turning one off removes its inputs
-from the schema rather than leaving them visible. The plugin is injected only
-when OpenChamber launches and owns the OpenCode process, and not at all when
-both settings are `false`.
+effect through OpenCode's watched global plugin directory. Each tool carries
+only its own actions and parameters. A tool disabled in every registered
+OpenChamber backend is absent from the schema.
+
+The default shared-service path publishes a plugin under the effective OpenCode
+config root's `plugins/openchamber-agent-tool/`. It works when the CLI started
+first and requires no edit to the user's `opencode.json`. An ownership marker
+prevents overwriting an unrelated plugin at that path. Explicit external-server
+connections do not install it.
+
+Each backend publishes a separate private callback record. The oldest healthy
+backend supplies tools, with PID and instance ID as stable tiebreakers. A second
+backend does not take over; after the first closes, the next healthy backend
+serves calls. This can direct browser actions to a different OpenChamber window
+than the one currently visible. Result metadata identifies the serving instance;
+there is no per-session window affinity. If the elected backend has a tool
+disabled, execution reports that rather than choosing another backend.
 
 - The plugin accepts the action's inputs either inside `parameters` or beside
   `action`, because models produce both shapes; an explicit `parameters` object
@@ -35,6 +43,28 @@ both settings are `false`.
   than a malformed call.
 
 ## Runtime flow
+
+### Shared service
+
+1. The HTTP listener binds. `buildSharedServiceEnv()` reads the tool settings and
+   publishes this backend's callback under
+   `<opencode-config-root>/openchamber-agent-tool/`.
+2. The generated global plugin reads the capability union from live callback
+   records. Registration and settings changes atomically rewrite its entrypoint
+   with a reload marker so OpenCode refreshes the tool schema.
+3. Before each action, the plugin checks the candidate's PID and authenticates a
+   bounded `GET /api/openchamber/agent-tool` liveness request. The returned
+   instance ID must match its record. It then sends the action once by POST.
+   Failed action requests are not replayed against another backend.
+4. Shutdown removes only this backend's callback and triggers a reload. The
+   owned plugin can remain installed with no tools when no callbacks remain;
+   this avoids deleting a concurrently starting backend's plugin. Dead-process
+   records do not participate in selection.
+
+### Legacy private child
+
+The existing private-child helpers use the following environment-based flow;
+the shared plugin never falls back to those credentials.
 
 1. The OpenChamber HTTP listener binds and publishes its authoritative port.
 2. `materializePlugin()` writes the plugin under
@@ -97,10 +127,13 @@ both settings are `false`.
   equal to that address: the OS sources a local connection to `<ip>` from
   `<ip>`. A wildcard bind keeps the loopback-only rule, and another machine on
   the network always arrives with its own address.
-- The token is never persisted, logged, returned to the UI, or written into
-  the materialized plugin.
-- The plugin adds the callback host to `NO_PROXY`/`no_proxy` inside the managed
-  child when it loads. Without that, an `HTTP_PROXY` in the child's environment
+- Shared callback tokens are persisted only in per-instance files created with
+  mode `0600` in a `0700` registry directory. They are never logged, returned to
+  the UI, or embedded in generated plugin source. Private-child tokens remain
+  environment-only. Each backend authorizes its own token with the existing
+  same-machine and timing-safe checks.
+- The shared plugin adds the selected callback host to `NO_PROXY`/`no_proxy`
+  before each health or action request. Without that, an `HTTP_PROXY` in the child's environment
   would receive a non-loopback callback, token included, because `fetch` has no
   per-request way to skip the environment proxy.
 - Inputs map to a fixed action and parameter allowlist. There is no arbitrary
@@ -132,12 +165,20 @@ error state.
 
 ## Runtime parity
 
-- Web and Desktop managed OpenCode: injected automatically.
+- Web and Desktop default local service: globally watched plugin and private
+  callback registration, regardless of which client started OpenCode first.
 - External OpenCode selected with `OPENCODE_HOST` or skip-start: not injected,
   because OpenChamber does not control that process environment.
-- VS Code: not injected; the extension owns a separate OpenCode lifecycle.
+- VS Code: shares the CLI service but publishes no callback. If a web/desktop
+  backend is running, its plugin is available in that shared service.
 - Hosted and Capacitor mobile clients use the server's managed OpenCode tool
   when connected to such a server; no tool runs in the client runtime.
+
+A CLI-first service retains its built-in `opencode.browser` plugin. OpenChamber
+does not rewrite user configuration to disable it. The OpenChamber-owned config
+layer can still disable it when supplied at a new service's startup. A service
+started with a different effective config root must watch the publication root
+for hot registration to apply.
 
 ## The calling tool is part of the request
 

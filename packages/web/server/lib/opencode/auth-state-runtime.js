@@ -51,7 +51,9 @@ export const createOpenCodeAuthStateRuntime = (dependencies) => {
       return {};
     }
 
-    const username = process.env.OPENCODE_SERVER_USERNAME?.trim() || 'opencode';
+    const username = getAuthSource() === 'shared'
+      ? 'opencode'
+      : process.env.OPENCODE_SERVER_USERNAME?.trim() || 'opencode';
     const credentials = Buffer.from(`${username}:${password}`).toString('base64');
     return { Authorization: `Basic ${credentials}` };
   };
@@ -85,5 +87,6 @@ export const createOpenCodeAuthStateRuntime = (dependencies) => {
     getOpenCodeAuthHeaders,
     isOpenCodeConnectionSecure,
     ensureLocalOpenCodeServerPassword,
+    setOpenCodeAuthState,
   };
 };

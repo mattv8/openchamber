@@ -52,6 +52,7 @@ import {
 } from './lib/event-stream/index.js';
 import { createFsSearchRuntime as createFsSearchRuntimeFactory } from './lib/fs/search.js';
 import { createOpenCodeLifecycleRuntime } from './lib/opencode/lifecycle.js';
+import { connectSharedOpenCode } from './lib/opencode/shared-service.js';
 import { createOpenCodeEnvRuntime } from './lib/opencode/env-runtime.js';
 import { providedLoginShellEnvSnapshot } from './lib/opencode/login-shell-env.js';
 import { resolveOpenCodeEnvConfig } from './lib/opencode/env-config.js';
@@ -63,6 +64,7 @@ import { createSettingsNormalizationRuntime } from './lib/opencode/settings-norm
 import { createSettingsHelpers } from './lib/opencode/settings-helpers.js';
 import { createThemeRuntime } from './lib/opencode/theme-runtime.js';
 import { createFeatureRoutesRuntime } from './lib/opencode/feature-routes-runtime.js';
+import { ensureInstalledOpenCodeVersionIsActive } from './lib/opencode/routes.js';
 import { parseServeCliOptions } from './lib/opencode/cli-options.js';
 import {
   registerAuthAndAccessRoutes,
@@ -628,6 +630,7 @@ let lastOpenCodeRestartDiagnostics = null;
 let isOpenCodeReady = false;
 let openCodeNotReadySince = 0;
 let isExternalOpenCode = false;
+let isSharedOpenCode = hmrState?.isSharedOpenCode === true;
 let exitOnShutdown = true;
 let uiAuthController = null;
 let activeTunnelController = null;
@@ -668,6 +671,7 @@ const syncToHmrState = () => {
     openCodeWorkingDirectory,
     openCodeAuthPassword,
     openCodeAuthSource,
+    isSharedOpenCode,
   });
 };
 
@@ -685,6 +689,7 @@ const syncFromHmrState = () => {
   openCodeWorkingDirectory = restored.openCodeWorkingDirectory;
   openCodeAuthPassword = restored.openCodeAuthPassword;
   openCodeAuthSource = restored.openCodeAuthSource;
+  isSharedOpenCode = restored.isSharedOpenCode;
 };
 
 // Module-level variables that shadow HMR state
@@ -701,6 +706,7 @@ const {
   configuredOpenCodeHost: ENV_CONFIGURED_OPENCODE_HOST,
   effectivePort: ENV_EFFECTIVE_PORT,
   configuredOpenCodeHostname: ENV_CONFIGURED_OPENCODE_HOSTNAME,
+  configuredOpenCodeHostnameExplicit: ENV_CONFIGURED_OPENCODE_HOSTNAME_EXPLICIT,
 } = resolveOpenCodeEnvConfig({
   env: process.env,
   logger: console,
@@ -739,6 +745,7 @@ const openCodeAuthStateRuntime = createOpenCodeAuthStateRuntime({
 const getOpenCodeAuthHeaders = (...args) => openCodeAuthStateRuntime.getOpenCodeAuthHeaders(...args);
 const isOpenCodeConnectionSecure = (...args) => openCodeAuthStateRuntime.isOpenCodeConnectionSecure(...args);
 const ensureLocalOpenCodeServerPassword = (...args) => openCodeAuthStateRuntime.ensureLocalOpenCodeServerPassword(...args);
+const setOpenCodeAuthState = (...args) => openCodeAuthStateRuntime.setOpenCodeAuthState(...args);
 
 const openCodeNetworkState = {};
 Object.defineProperties(openCodeNetworkState, {
@@ -1252,6 +1259,7 @@ Object.defineProperties(openCodeLifecycleState, {
   isOpenCodeReady: { get: () => isOpenCodeReady, set: (value) => { isOpenCodeReady = value; } },
   openCodeNotReadySince: { get: () => openCodeNotReadySince, set: (value) => { openCodeNotReadySince = value; } },
   isExternalOpenCode: { get: () => isExternalOpenCode, set: (value) => { isExternalOpenCode = value; } },
+  isSharedOpenCode: { get: () => isSharedOpenCode, set: (value) => { isSharedOpenCode = value; } },
   isShuttingDown: { get: () => isShuttingDown, set: (value) => { isShuttingDown = value; } },
   healthCheckInterval: { get: () => healthCheckInterval, set: (value) => { healthCheckInterval = value; } },
   expressApp: { get: () => expressApp, set: (value) => { expressApp = value; } },
@@ -1268,6 +1276,7 @@ const openCodeLifecycleRuntime = createOpenCodeLifecycleRuntime({
     ENV_CONFIGURED_OPENCODE_HOST,
     ENV_EFFECTIVE_PORT,
     ENV_CONFIGURED_OPENCODE_HOSTNAME,
+    ENV_CONFIGURED_OPENCODE_HOSTNAME_EXPLICIT,
     ENV_SKIP_OPENCODE_START,
   },
   syncToHmrState,
@@ -1315,7 +1324,7 @@ const openCodeLifecycleRuntime = createOpenCodeLifecycleRuntime({
   // so the UI keeps receiving events instead of staying pinned to the old
   // process (#2638). The runtime is created later by the startup pipeline;
   // by the time any restart runs, it is assigned.
-  onOpenCodeRestarted: () => {
+  onOpenCodeRestarted: ({ interruptBusySessions = true } = {}) => {
     // A restart reloads plugins: provider ports, credentials and the provider
     // list itself can all differ from what was cached.
     resetOpenCodeRuntimeProviders();
@@ -1325,6 +1334,7 @@ const openCodeLifecycleRuntime = createOpenCodeLifecycleRuntime({
       console.warn('Failed to rebind message stream after OpenCode restart:', error?.message ?? error);
     }
     try {
+      if (!interruptBusySessions) return;
       const { sessionIds } = sessionRuntime.interruptBusySessionsAfterRestart();
       if (sessionIds.length > 0) {
         const multiple = sessionIds.length > 1;
@@ -1343,6 +1353,9 @@ const openCodeLifecycleRuntime = createOpenCodeLifecycleRuntime({
     }
   },
   getManagedOpenCodeEnv: async () => (managedConfigRuntime ? managedConfigRuntime.buildManagedChildEnv() : {}),
+  getSharedOpenCodeEnv: async () => (managedConfigRuntime ? managedConfigRuntime.buildSharedServiceEnv() : {}),
+  setOpenCodeAuthState,
+  connectSharedOpenCode,
 });
 
 const getOpenCodeCompatibility = async () => {
@@ -1613,7 +1626,7 @@ const ensureGlobalWatcherStarted = async () => {
 const bootstrapOpenCodeAtStartup = async (...args) => {
   await openCodeLifecycleRuntime.bootstrapOpenCodeAtStartup(...args);
   scheduleOpenCodeApiDetection();
-  if (openCodeLifecycleState.openCodeProcess && !openCodeLifecycleState.isExternalOpenCode) {
+  if ((openCodeLifecycleState.openCodeProcess || openCodeLifecycleState.isSharedOpenCode) && !openCodeLifecycleState.isExternalOpenCode) {
     startHealthMonitoring();
   }
   // The global watcher used to start only for desktop notifications; the
@@ -1660,7 +1673,11 @@ const gracefulShutdownRuntime = createGracefulShutdownRuntime({
   setMessageStreamRuntime: (value) => {
     messageStreamRuntime = value;
   },
-  shouldSkipOpenCodeStop: () => ENV_SKIP_OPENCODE_START || isExternalOpenCode,
+  shouldSkipOpenCodeStop: () => ENV_SKIP_OPENCODE_START || isExternalOpenCode || isSharedOpenCode,
+  disposeSharedService: async () => {
+    await openCodeLifecycleRuntime.cancelSharedStartup();
+    await managedConfigRuntime?.disposeSharedService();
+  },
   getOpenCodePort: () => openCodePort,
   getOpenCodeProcess: () => openCodeProcess,
   setOpenCodeProcess: (value) => {
@@ -1723,6 +1740,15 @@ async function main(options = {}) {
     readSettings: () => readSettingsFromDiskMigrated(),
     isAgentMemoryAvailable: isAgentMemoryFeatureAvailable,
   });
+  const priorManagedConfigRuntime = hmrState.managedConfigRuntime;
+  if (priorManagedConfigRuntime && priorManagedConfigRuntime !== managedConfigRuntime) {
+    try {
+      await priorManagedConfigRuntime.disposeSharedService?.();
+    } catch {
+      console.warn('[OpenCode] Could not withdraw the previous shared tool callback during reload.');
+    }
+  }
+  hmrState.managedConfigRuntime = managedConfigRuntime;
 
   // Pairing transports advertised to the create-device dialog. LAN reachability is
   // derived from the SERVER's actual bind (a wildcard bind → the machine's LAN IP;
@@ -2144,8 +2170,19 @@ async function main(options = {}) {
         env: { ...getLoginShellEnvSnapshot(), ...process.env, PATH: buildManagedOpenCodePath() },
       });
       await persistSettings({ opencodeBinary: binary });
-      await refreshOpenCodeAfterConfigChange('OpenCode v2 installation');
+      const refresh = await refreshOpenCodeAfterConfigChange('OpenCode v2 installation');
       await waitForOpenCodeReady();
+      if (refresh.external) {
+        const installedVersion = await readOpenCodeCliVersion(resolveManagedOpenCodeLaunchSpec(binary), {
+          env: { ...getLoginShellEnvSnapshot(), ...process.env, PATH: buildManagedOpenCodePath() },
+          cwd: os.homedir(),
+        });
+        const connectedVersion = await readExternalOpenCodeVersion(
+          openCodeBaseUrl || `http://127.0.0.1:${openCodePort}`,
+          getOpenCodeAuthHeaders(),
+        );
+        ensureInstalledOpenCodeVersionIsActive({ installedVersion, connectedVersion });
+      }
     },
     upgradeOpenCodeCli: () => runOpenCodeCliUpgrade(
       resolveManagedOpenCodeLaunchSpec(lastOpenCodeLaunchDiagnostics?.sourceBinary || resolvedOpencodeBinary),
@@ -2285,7 +2322,7 @@ async function main(options = {}) {
     getManagedOpenCodePreflight: () => openCodeLifecycleRuntime.getManagedOpenCodePreflight(),
     restartOpenCode: () => restartOpenCode(),
     getOpenCodeProcessInfo: () => {
-      const managed = Boolean((openCodeProcess || openCodePort) && !ENV_SKIP_OPENCODE_START && !isExternalOpenCode);
+      const managed = Boolean((openCodeProcess || openCodePort) && !ENV_SKIP_OPENCODE_START && !isExternalOpenCode && !isSharedOpenCode);
       // Only ever expose pid/port for a server WE manage. The Electron-side
       // killer kills by port (lsof + kill -KILL), so returning a port we don't
       // own — e.g. an external/desktop OpenCode on 4096 we attached to — would

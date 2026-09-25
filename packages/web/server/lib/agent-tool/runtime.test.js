@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import express from 'express';
 import request from 'supertest';
@@ -54,6 +55,18 @@ const loadTools = async (dataDir, tag) => {
   });
   return registered;
 };
+
+const loadSharedTools = async (configRoot, tag) => {
+  const entrypoint = path.join(configRoot, 'plugins', 'openchamber-agent-tool', 'index.js');
+  const pluginModule = await import(`${pathToFileURL(entrypoint).href}?${tag}=${crypto.randomUUID()}`);
+  const registered = {};
+  await pluginModule.default.setup({
+    tool: { transform: (edit) => edit({ add: (tool) => { registered[tool.name] = tool; } }) },
+  });
+  return registered;
+};
+
+const closeServer = (server) => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
 
 describe('agent tool action allowlist', () => {
   it('defines a short title and agent description for every action', () => {
@@ -568,7 +581,134 @@ describe('managed agent tool runtime', () => {
       else process.env.OPENCHAMBER_AGENT_TOOL_URL = previousUrl;
       if (previousToken === undefined) delete process.env.OPENCHAMBER_AGENT_TOOL_TOKEN;
       else process.env.OPENCHAMBER_AGENT_TOOL_TOKEN = previousToken;
-      await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      await closeServer(server);
+    }
+  });
+
+  it('publishes an env-free shared plugin that calls the authenticated callback', async () => {
+    let activePort = null;
+    const { runtime, dataDir, executeAction } = await createRuntime({ getActivePort: () => activePort });
+    const configRoot = path.join(dataDir, 'config');
+    const app = express();
+    runtime.registerRoutes(app, express);
+    const server = await new Promise((resolve) => {
+      const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
+    });
+    activePort = server.address().port;
+
+    try {
+      await runtime.publishSharedService({ configRoot, capabilities: { control: true } });
+      const source = await fs.readFile(path.join(configRoot, 'plugins', 'openchamber-agent-tool', 'index.js'), 'utf8');
+      expect(source).not.toContain('OPENCHAMBER_AGENT_TOOL_TOKEN');
+      expect(source).not.toContain('OPENCHAMBER_AGENT_TOOL_URL');
+      expect((await fs.stat(path.join(configRoot, 'openchamber-agent-tool'))).mode & 0o777).toBe(0o700);
+
+      const tools = await loadSharedTools(configRoot, 'shared-callback');
+      expect(Object.keys(tools)).toEqual(['openchamber']);
+      const result = await tools.openchamber.execute({ action: 'projects.list' }, { sessionID: 'ses_shared', progress: async () => {} });
+      expect(JSON.parse(result.content)).toEqual(expect.objectContaining({ ok: true, action: 'projects.list' }));
+      expect(result.metadata.openchamber.instanceId).toBe(runtime.instanceId);
+      expect(executeAction).toHaveBeenCalledTimes(1);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it('elects the oldest healthy callback and never replays a sent action', async () => {
+    let firstPort = null;
+    let secondPort = null;
+    const first = await createRuntime({ getActivePort: () => firstPort });
+    const second = await createRuntime({ getActivePort: () => secondPort });
+    const configRoot = path.join(first.dataDir, 'shared-config');
+    const firstApp = express();
+    const secondApp = express();
+    first.runtime.registerRoutes(firstApp, express);
+    second.runtime.registerRoutes(secondApp, express);
+    const firstServer = await new Promise((resolve) => { const server = firstApp.listen(0, '127.0.0.1', () => resolve(server)); });
+    const secondServer = await new Promise((resolve) => { const server = secondApp.listen(0, '127.0.0.1', () => resolve(server)); });
+    firstPort = firstServer.address().port;
+    secondPort = secondServer.address().port;
+
+    try {
+      await first.runtime.publishSharedService({ configRoot, capabilities: { control: true } });
+      await second.runtime.publishSharedService({ configRoot, capabilities: { control: true } });
+      const registry = path.join(configRoot, 'openchamber-agent-tool');
+      const firstRecord = path.join(registry, `${first.runtime.instanceId}.json`);
+      const record = JSON.parse(await fs.readFile(firstRecord, 'utf8'));
+      await fs.writeFile(firstRecord, `${JSON.stringify({ ...record, startedAt: 1 })}\n`, { mode: 0o600 });
+      const tools = await loadSharedTools(configRoot, 'oldest');
+      const result = await tools.openchamber.execute({ action: 'projects.list' }, { sessionID: 'ses_shared', progress: async () => {} });
+      expect(result.metadata.openchamber.instanceId).toBe(first.runtime.instanceId);
+      expect(first.executeAction).toHaveBeenCalledTimes(1);
+      expect(second.executeAction).not.toHaveBeenCalled();
+
+      await first.runtime.disposeSharedService();
+      const survivorTools = await loadSharedTools(configRoot, 'survivor');
+      const survivorResult = await survivorTools.openchamber.execute({ action: 'projects.list' }, { sessionID: 'ses_shared', progress: async () => {} });
+      expect(survivorResult.metadata.openchamber.instanceId).toBe(second.runtime.instanceId);
+      expect(second.executeAction).toHaveBeenCalledTimes(1);
+    } finally {
+      await closeServer(firstServer);
+      await closeServer(secondServer);
+    }
+  });
+
+  it('removes its registration when plugin publication hits a foreign collision', async () => {
+    const { runtime, dataDir } = await createRuntime();
+    const configRoot = path.join(dataDir, 'config');
+    const foreign = path.join(configRoot, 'plugins', 'openchamber-agent-tool');
+    await fs.mkdir(foreign, { recursive: true });
+    await fs.writeFile(path.join(foreign, 'package.json'), JSON.stringify({ name: 'foreign-plugin' }));
+
+    await expect(runtime.publishSharedService({ configRoot, capabilities: { control: true } })).rejects.toThrow('owned by another plugin');
+    await expect(fs.stat(path.join(configRoot, 'openchamber-agent-tool', `${runtime.instanceId}.json`))).rejects.toThrow();
+  });
+
+  it('prunes only valid registrations whose owning process is dead', async () => {
+    const { runtime, dataDir } = await createRuntime();
+    const configRoot = path.join(dataDir, 'config');
+    const registry = path.join(configRoot, 'openchamber-agent-tool');
+    await fs.mkdir(registry, { recursive: true });
+    const child = spawn(process.execPath, ['-e', '']);
+    await new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', resolve);
+    });
+    const deadRecord = {
+      instanceId: 'dead-instance', url: 'http://127.0.0.1:3901/api/openchamber/agent-tool', token: 'dead-token', pid: child.pid, startedAt: 1, capabilities: { control: true },
+    };
+    const liveRecord = {
+      ...deadRecord, instanceId: 'live-instance', pid: process.pid, token: 'live-token',
+    };
+    const malformedPath = path.join(registry, 'foreign.json');
+    await fs.writeFile(path.join(registry, 'dead-instance.json'), `${JSON.stringify(deadRecord)}\n`);
+    await fs.writeFile(path.join(registry, 'live-instance.json'), `${JSON.stringify(liveRecord)}\n`);
+    await fs.writeFile(malformedPath, '{not json');
+
+    await runtime.publishSharedService({ configRoot, capabilities: { control: true } });
+
+    await expect(fs.stat(path.join(registry, 'dead-instance.json'))).rejects.toThrow();
+    await expect(fs.stat(path.join(registry, 'live-instance.json'))).resolves.toBeDefined();
+    expect(await fs.readFile(malformedPath, 'utf8')).toBe('{not json');
+    await expect(fs.stat(path.join(registry, `${runtime.instanceId}.json`))).resolves.toBeDefined();
+  });
+
+  it('keeps a successful registration when concurrent shared publication races', async () => {
+    const first = await createRuntime();
+    const second = await createRuntime();
+    const configRoot = path.join(first.dataDir, 'shared-config');
+
+    const publications = await Promise.allSettled([
+      first.runtime.publishSharedService({ configRoot, capabilities: { control: true } }),
+      second.runtime.publishSharedService({ configRoot, capabilities: { control: true } }),
+    ]);
+    const successful = publications.filter((result) => result.status === 'fulfilled');
+    expect(successful).not.toHaveLength(0);
+    for (const [index, result] of publications.entries()) {
+      const runtime = index === 0 ? first.runtime : second.runtime;
+      const recordPath = path.join(configRoot, 'openchamber-agent-tool', `${runtime.instanceId}.json`);
+      if (result.status === 'fulfilled') await expect(fs.stat(recordPath)).resolves.toBeDefined();
+      else await expect(fs.stat(recordPath)).rejects.toThrow();
     }
   });
 });

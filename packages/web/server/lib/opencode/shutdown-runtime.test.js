@@ -201,6 +201,25 @@ describe('graceful shutdown runtime', () => {
     expect(stopAllGuestServices).toHaveBeenCalledTimes(1);
   });
 
+  it('disconnects shared-service tool registration without closing its process or port', async () => {
+    const server = { close: vi.fn((callback) => callback()) };
+    const disposeSharedService = vi.fn(async () => {});
+    const close = vi.fn();
+    const killProcessOnPort = vi.fn();
+    const runtime = createRuntime(server, {
+      shouldSkipOpenCodeStop: () => true,
+      disposeSharedService,
+      getOpenCodeProcess: () => ({ close }),
+      killProcessOnPort,
+    });
+
+    await runtime.gracefulShutdown({ exitProcess: false });
+
+    expect(disposeSharedService).toHaveBeenCalledOnce();
+    expect(close).not.toHaveBeenCalled();
+    expect(killProcessOnPort).not.toHaveBeenCalled();
+  });
+
   it('continues shutdown when stopping guest services fails', async () => {
     const server = {
       close: vi.fn((callback) => {

@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
-import { registerOpenCodeRoutes } from './routes.js';
+import {
+  ensureInstalledOpenCodeVersionIsActive,
+  OpenCodeServiceRestartRequiredError,
+  registerOpenCodeRoutes,
+} from './routes.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -120,6 +124,30 @@ describe('OpenCode upgrade routes', () => {
 });
 
 describe('OpenCode v1 migration routes', () => {
+  it('accepts a shared service only when it runs the installed CLI version', () => {
+    expect(() => ensureInstalledOpenCodeVersionIsActive({
+      installedVersion: '2.0.16', connectedVersion: '2.0.16',
+    })).not.toThrow();
+    expect(() => ensureInstalledOpenCodeVersionIsActive({
+      installedVersion: '2.0.16', connectedVersion: '2.0.15',
+    })).toThrow(OpenCodeServiceRestartRequiredError);
+  });
+
+  it('preserves the shared-service restart requirement through the installer route', async () => {
+    const installOpenCodeV2 = vi.fn(async () => {
+      throw new OpenCodeServiceRestartRequiredError();
+    });
+    const { app } = createApp({
+      getOpenCodeCompatibility: async () => ({ canInstall: true }),
+      installOpenCodeV2,
+    });
+    await request(app).post('/api/opencode/install-v2').expect(409, {
+      success: false,
+      code: 'OPENCODE_SHARED_SERVICE_RESTART_REQUIRED',
+      error: 'CLI installed; restart shared service to use the new OpenCode binary.',
+    });
+  });
+
   it('rejects external, bundled and unsupported runtimes before running an installer', async () => {
     for (const installation of ['external', 'bundled', 'managed']) {
       const installOpenCodeV2 = vi.fn();

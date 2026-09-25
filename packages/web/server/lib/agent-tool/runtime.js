@@ -218,8 +218,6 @@ const createToolEntry = ({ name, description, definitions, parameters }) => Stri
           },
         })
         await progress()
-        const endpoint = process.env.OPENCHAMBER_AGENT_TOOL_URL
-        const token = process.env.OPENCHAMBER_AGENT_TOOL_TOKEN
         // No output schema is declared, so a result must never carry an output
         // field: OpenCode rejects that with "Tool result declared output
         // without an output schema". The envelope travels as text content.
@@ -227,30 +225,14 @@ const createToolEntry = ({ name, description, definitions, parameters }) => Stri
           content: JSON.stringify(payload),
           metadata: { openchamber: { schemaVersion: ${TOOL_SCHEMA_VERSION}, action: args.action, description: title, ok: false } },
         })
-        if (!endpoint || !token) {
-          return failure({ schemaVersion: ${TOOL_SCHEMA_VERSION}, ok: false, action: args.action, error: { message: "OpenChamber managed tool connection is unavailable" } })
-        }
-
         try {
-          const response = await fetch(endpoint, {
-            method: "POST",
-            headers: {
-              authorization: "Bearer " + token,
-              "content-type": "application/json",
-            },
-            // OpenCode 2 no longer hands a tool its session directory, so the
-            // session id goes over instead and OpenChamber resolves the
-            // directory on its own side. The signal fires when the session is
-            // aborted, so the OpenChamber side stops the action too.
-            body: JSON.stringify({ input: args, sessionID: context.sessionID, tool: ${JSON.stringify(name)} }),
-            signal: context.signal,
-          })
+          const { response, instanceId } = await invokeCallback({ input: args, sessionID: context.sessionID, tool: ${JSON.stringify(name)} }, context.signal)
           const content = await response.text()
           let result = null
           try { result = JSON.parse(content) } catch {}
           const valid = result?.schemaVersion === ${TOOL_SCHEMA_VERSION} && typeof result?.ok === "boolean" && typeof result?.action === "string"
           await progress({ ok: valid && result.ok === true })
-          if (valid) return { content, metadata: { openchamber: { schemaVersion: ${TOOL_SCHEMA_VERSION}, action: args.action, description: title, ok: result.ok === true } } }
+          if (valid) return { content, metadata: { openchamber: { schemaVersion: ${TOOL_SCHEMA_VERSION}, action: args.action, description: title, ok: result.ok === true, ...(instanceId ? { instanceId } : {}) } } }
           return failure({ schemaVersion: ${TOOL_SCHEMA_VERSION}, ok: false, action: args.action, error: { message: "OpenChamber returned an invalid response", kind: "runtime", status: response.status } })
         } catch (error) {
           return failure({ schemaVersion: ${TOOL_SCHEMA_VERSION}, ok: false, action: args.action, error: { message: error instanceof Error ? error.message : String(error), kind: "runtime" } })
@@ -299,7 +281,17 @@ const createPluginSource = ({ includeControl, includeWeb, includeMemory, include
   // included, to that proxy, and no per-request option turns that off. The
   // exemption is added inside the child because only there is the final
   // NO_PROXY, merged from the shell and server environments, visible.
-  return `const exemptCallbackFromProxy = () => {
+  return `const invokeCallback = async (payload, signal) => {
+  const endpoint = process.env.OPENCHAMBER_AGENT_TOOL_URL
+  const token = process.env.OPENCHAMBER_AGENT_TOOL_TOKEN
+  if (!endpoint || !token) throw new Error("OpenChamber managed tool connection is unavailable")
+  return { response: await fetch(endpoint, {
+    method: "POST", headers: { authorization: "Bearer " + token, "content-type": "application/json" },
+    body: JSON.stringify(payload), signal,
+  }) }
+}
+
+const exemptCallbackFromProxy = () => {
   const endpoint = process.env.OPENCHAMBER_AGENT_TOOL_URL
   if (!endpoint || !URL.canParse(endpoint)) return
   const host = new URL(endpoint).hostname.replace(/^\\[|\\]$/g, "")
@@ -320,12 +312,76 @@ ${entries.join('')}    })
 `;
 };
 
+const SHARED_CAPABILITIES = ['control', 'web', 'memory', 'notify'];
+
+const createSharedPluginSource = () => {
+  const entries = [
+    ['control', 'openchamber', CONTROL_TOOL_DESCRIPTION, OPENCHAMBER_AGENT_TOOL_ACTION_DEFINITIONS, CONTROL_PARAMETER_PROPERTIES],
+    ['web', 'openchamber_web', WEB_TOOL_DESCRIPTION, OPENCHAMBER_WEB_ACTION_DEFINITIONS, WEB_PARAMETER_PROPERTIES],
+    ['memory', 'openchamber_memory', MEMORY_TOOL_DESCRIPTION, OPENCHAMBER_MEMORY_ACTION_DEFINITIONS, MEMORY_PARAMETER_PROPERTIES],
+    ['notify', 'openchamber_notify', NOTIFY_TOOL_DESCRIPTION, OPENCHAMBER_NOTIFY_ACTION_DEFINITIONS, NOTIFY_PARAMETER_PROPERTIES],
+  ].map(([capability, name, description, definitions, parameters]) => `      if (enabled.has(${JSON.stringify(capability)})) {\n${createToolEntry({ name, description, definitions, parameters })}      }\n`).join('');
+  return `import fs from "node:fs/promises"
+import path from "node:path"
+import { fileURLToPath } from "node:url"
+
+const capabilityForTool = { openchamber: "control", openchamber_web: "web", openchamber_memory: "memory", openchamber_notify: "notify" }
+const registryDirectory = path.join(path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url)))), "openchamber-agent-tool")
+const isRecord = (value) => value && typeof value.instanceId === "string" && typeof value.url === "string" && typeof value.token === "string" && Number.isInteger(value.pid) && Number.isFinite(value.startedAt) && value.capabilities && typeof value.capabilities === "object"
+const pidAlive = (pid) => { try { process.kill(pid, 0); return true } catch { return false } }
+const registrations = async () => {
+  let names
+  try { names = await fs.readdir(registryDirectory) } catch (error) { if (error?.code === "ENOENT") return []; throw error }
+  const values = await Promise.all(names.filter((name) => name.endsWith(".json")).map(async (name) => {
+    try { const value = JSON.parse(await fs.readFile(path.join(registryDirectory, name), "utf8")); return isRecord(value) && pidAlive(value.pid) ? value : null } catch { return null }
+  }))
+  return values.filter(Boolean).sort((a, b) => a.startedAt - b.startedAt || a.pid - b.pid || a.instanceId.localeCompare(b.instanceId))
+}
+const exempt = (endpoint) => {
+  const host = new URL(endpoint).hostname.replace(/^\\[|\\]$/g, "")
+  for (const key of ["NO_PROXY", "no_proxy"]) { const entries = (process.env[key] || "").split(",").map((entry) => entry.trim()).filter(Boolean); if (!entries.includes(host)) process.env[key] = [...entries, host].join(",") }
+}
+const healthy = async (record, signal) => {
+  try {
+    exempt(record.url)
+    const timeout = AbortSignal.timeout(1000)
+    const response = await fetch(record.url, { headers: { authorization: "Bearer " + record.token }, signal: signal ? AbortSignal.any([signal, timeout]) : timeout, redirect: "error" })
+    const body = await response.json()
+    return response.ok && body?.instanceId === record.instanceId
+  } catch { return false }
+}
+const invokeCallback = async (payload, signal) => {
+  const candidates = await registrations()
+  for (const record of candidates) {
+    if (!await healthy(record, signal)) continue
+    const capability = capabilityForTool[payload.tool]
+    if (!record.capabilities[capability]) throw new Error("OpenChamber managed tool is disabled on the serving instance")
+    exempt(record.url)
+    return { instanceId: record.instanceId, response: await fetch(record.url, { method: "POST", headers: { authorization: "Bearer " + record.token, "content-type": "application/json" }, body: JSON.stringify(payload), signal, redirect: "error" }) }
+  }
+  throw new Error("OpenChamber managed tool connection is unavailable")
+}
+
+export default {
+  id: ${JSON.stringify(PLUGIN_ID)},
+  setup: async (ctx) => {
+    const active = await registrations()
+    const enabled = new Set(active.flatMap((record) => Object.entries(record.capabilities).filter(([, value]) => value).map(([name]) => name)))
+    await ctx.tool.transform((tools) => {
+${entries}
+    })
+  },
+}
+`;
+};
+
 // A configured plugin has to be a directory carrying a package.json that
 // resolves an entrypoint; OpenCode skips a plain .js path.
 const PLUGIN_PACKAGE_JSON = `${JSON.stringify({
   name: 'openchamber-agent-tool',
   version: '0.0.0',
   private: true,
+  openchamberManaged: true,
   type: 'module',
   exports: { '.': './index.js' },
 }, null, 2)}\n`;
@@ -346,6 +402,10 @@ export const createAgentToolRuntime = (dependencies) => {
   const pluginPath = path.join(pluginDirectory, 'index.js');
   const pluginManifestPath = path.join(pluginDirectory, 'package.json');
   let activeToken = null;
+  const instanceId = crypto.randomBytes(16).toString('hex');
+  const sharedToken = crypto.randomBytes(32).toString('base64url');
+  const startedAt = Date.now();
+  let sharedRegistration = null;
 
   const getConcreteBoundAddress = () => resolveConcreteBoundAddress(getActiveHost());
 
@@ -373,18 +433,22 @@ export const createAgentToolRuntime = (dependencies) => {
    * is currently off: a tool switched on later reaches a process that already
    * knows where and how to call back, so the toggle needs no restart.
    */
-  const createChildEnv = () => {
+  const callbackUrl = () => {
     const port = getActivePort();
     if (!Number.isInteger(port) || port <= 0) {
       throw new Error('OpenChamber listener port is unavailable for managed tool injection');
     }
-    activeToken = crypto.randomBytes(32).toString('base64url');
     // A listener bound to one concrete address does not answer on loopback,
     // so the callback has to point at the bound address instead.
     const callbackAddress = getConcreteBoundAddress() || '127.0.0.1';
     const callbackHost = callbackAddress.includes(':') ? `[${callbackAddress}]` : callbackAddress;
+    return `http://${callbackHost}:${port}/api/openchamber/agent-tool`;
+  };
+
+  const createChildEnv = () => {
+    activeToken = crypto.randomBytes(32).toString('base64url');
     return {
-      OPENCHAMBER_AGENT_TOOL_URL: `http://${callbackHost}:${port}/api/openchamber/agent-tool`,
+      OPENCHAMBER_AGENT_TOOL_URL: callbackUrl(),
       OPENCHAMBER_AGENT_TOOL_TOKEN: activeToken,
     };
   };
@@ -482,8 +546,12 @@ export const createAgentToolRuntime = (dependencies) => {
   };
 
   const registerRoutes = (app, express) => {
+    app.get('/api/openchamber/agent-tool', (req, res) => {
+      if (!authorize(req) && !authorizeShared(req)) return res.status(401).json({ error: 'Unauthorized' });
+      return res.json({ instanceId });
+    });
     app.post('/api/openchamber/agent-tool', express.json({ limit: '1mb' }), async (req, res) => {
-      if (!authorize(req)) return res.status(401).json({ error: 'Unauthorized' });
+      if (!authorize(req) && !authorizeShared(req)) return res.status(401).json({ error: 'Unauthorized' });
       const controller = new AbortController();
       const abortOnDisconnect = () => {
         if (!res.writableEnded) controller.abort();
@@ -507,13 +575,118 @@ export const createAgentToolRuntime = (dependencies) => {
     });
   };
 
+  const authorizeShared = (req) => {
+    if (!sharedRegistration || !isSameMachineAddress(req.socket?.remoteAddress)) return false;
+    const header = asNonEmptyString(req.headers?.authorization);
+    if (!header?.startsWith('Bearer ')) return false;
+    const provided = Buffer.from(header.slice(7));
+    const expected = Buffer.from(sharedToken);
+    return provided.length === expected.length && crypto.timingSafeEqual(provided, expected);
+  };
+
+  const writeAtomically = async (target, text, mode = 0o600) => {
+    const temporary = `${target}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
+    try {
+      await fsPromises.writeFile(temporary, text, { encoding: 'utf8', mode });
+      await fsPromises.rename(temporary, target);
+    } catch (error) {
+      await fsPromises.rm(temporary, { force: true }).catch(() => {});
+      throw error;
+    }
+  };
+
+  const capabilitiesOf = (value = {}) => Object.fromEntries(SHARED_CAPABILITIES.map((name) => [name, value[name] === true]));
+
+  const pruneDeadSharedRegistrations = async (registryDirectory) => {
+    const names = await fsPromises.readdir(registryDirectory);
+    await Promise.all(names.filter((name) => name.endsWith('.json') && name !== `${instanceId}.json`).map(async (name) => {
+      let record;
+      try {
+        record = JSON.parse(await fsPromises.readFile(path.join(registryDirectory, name), 'utf8'));
+      } catch {
+        return;
+      }
+      if (
+        Object.prototype.toString.call(record) !== '[object Object]'
+        || record.instanceId?.constructor !== String
+        || name !== `${record.instanceId}.json`
+        || !Number.isInteger(record.pid)
+        || record.pid <= 0
+        || record.url?.constructor !== String
+        || record.token?.constructor !== String
+        || !Number.isFinite(record.startedAt)
+        || Object.prototype.toString.call(record.capabilities) !== '[object Object]'
+      ) return;
+      try {
+        process.kill(record.pid, 0);
+      } catch (error) {
+        if (error?.code === 'ESRCH') await fsPromises.rm(path.join(registryDirectory, name), { force: true });
+      }
+    }));
+  };
+
+  const writeSharedPlugin = async (configRoot) => {
+    const directory = path.join(configRoot, 'plugins', PLUGIN_ID);
+    const manifest = path.join(directory, 'package.json');
+    await fsPromises.mkdir(path.dirname(directory), { recursive: true, mode: 0o700 });
+    let created = false;
+    try {
+      await fsPromises.mkdir(directory, { mode: 0o700 });
+      created = true;
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+    }
+    if (created) {
+      await writeAtomically(manifest, PLUGIN_PACKAGE_JSON);
+    } else {
+      let current;
+      try {
+        current = JSON.parse(await fsPromises.readFile(manifest, 'utf8'));
+      } catch (error) {
+        if (error?.code === 'ENOENT') throw new Error('OpenChamber shared agent-tool plugin path is reserved by an existing directory');
+        throw error;
+      }
+      if (current.openchamberManaged !== true) throw new Error('OpenChamber shared agent-tool plugin path is owned by another plugin');
+    }
+    await writeAtomically(path.join(directory, 'index.js'), `${createSharedPluginSource()}\n// reload ${crypto.randomUUID()}\n`);
+  };
+
+  const publishSharedService = async ({ configRoot, capabilities }) => {
+    if (!asNonEmptyString(configRoot)) throw new Error('OpenCode global config root is unavailable for shared tool registration');
+    const registryDirectory = path.join(configRoot, 'openchamber-agent-tool');
+    await fsPromises.mkdir(registryDirectory, { recursive: true, mode: 0o700 });
+    await fsPromises.chmod(registryDirectory, 0o700);
+    await pruneDeadSharedRegistrations(registryDirectory);
+    const recordPath = path.join(registryDirectory, `${instanceId}.json`);
+    await writeAtomically(recordPath, `${JSON.stringify({ instanceId, url: callbackUrl(), token: sharedToken, pid: process.pid, startedAt, capabilities: capabilitiesOf(capabilities) })}\n`);
+    try {
+      await writeSharedPlugin(configRoot);
+    } catch (error) {
+      await fsPromises.rm(recordPath, { force: true });
+      throw error;
+    }
+    sharedRegistration = { configRoot, recordPath };
+    return { instanceId };
+  };
+
+  const disposeSharedService = async () => {
+    if (!sharedRegistration) return;
+    const { configRoot, recordPath } = sharedRegistration;
+    await fsPromises.rm(recordPath, { force: true });
+    sharedRegistration = null;
+    await writeSharedPlugin(configRoot);
+  };
+
   return {
     pluginDirectory,
     materializePlugin,
     createChildEnv,
-    authorizeRequest: authorize,
+    authorizeRequest: (req) => authorize(req) || authorizeShared(req),
     registerRoutes,
     execute,
     abortSession,
+    publishSharedService,
+    disposeSharedService,
+    instanceId,
   };
 };

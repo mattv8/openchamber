@@ -300,6 +300,37 @@ Installer output is discarded, not forwarded to clients or logs.
 The runtime maintains active-session count incrementally from idempotent activity phase transitions. Upstream stall-timeout and lifecycle health checks read it in O(1); the hourly cleanup removes activity phases older than 24 hours without broadcasting synthetic state transitions. Snapshot generation remains reserved for the session-activity API.
 
 ## Public exports (lifecycle.js)
+- Default local connections use the CLI-owned shared service through
+  `shared-service.js`. Discovery runs the selected CLI's `service status`, reads
+  its credential with `service get password`, and verifies authenticated
+  `/api/info`. A supported running service is reused even when its version
+  differs from the selected binary. Bootstrap or an explicit reconnect can
+  request `service start`; upstream may replace an incompatible or unresponsive
+  service during that operation. Automatic health recovery is discovery-only:
+  `status` reporting `stopped` is not proof that no process exists.
+- Shared connections have no owned child handle. Closing OpenChamber withdraws
+  its tool callback and leaves the service running. Reconnect discovers its
+  current URL and credential; it does not kill a PID, rotate the service password,
+  or claim that active sessions were interrupted. Electron receives no shared
+  PID or port through its managed-process termination contract.
+- Explicit external endpoints remain external. Default discovery failure does
+  not fall back to a private server. Explicit managed port/hostname pins retain
+  the legacy private-process contract and its V1 migration top-up. Those pinned
+  processes, other plain `serve` processes, and separate CLI channels remain
+  outside this election protocol. Shared mode never re-arms V1 migration
+  metadata: a safe import into a running shared service needs upstream support.
+- Shared tool publication is owned by `managed-config-file.js` and documented in
+  [`../agent-tool/DOCUMENTATION.md`](../agent-tool/DOCUMENTATION.md). OpenCode's
+  watched configuration applies ordinary edits without a process restart.
+  Publication failure is reported without blocking the OpenCode connection.
+  Requests requiring a process restart use the existing manual-restart response
+  for shared connections rather than claiming that reconnect replaced a binary.
+
+### Legacy owned-process helpers
+
+The owned-process helpers below retain their explicit process contract; shared
+service connections never acquire it.
+
 - `createOpenCodeLifecycleRuntime(dependencies)`: creates lifecycle runtime for managed/external OpenCode process orchestration. The optional `onOpenCodeRestarted` dependency (default `null`) is fired after a successful managed restart. `index.js` rebinds event-stream readers to the possibly-new port (#2638), then calls `interruptBusySessionsAfterRestart()` and broadcasts one `opencode-restart-interrupted` UI notification when interrupted turns exist (#2943).
 - Returned API:
   - `startOpenCode()`

@@ -58,6 +58,11 @@ describe('resolveOpenCodeEnvConfig hostname', () => {
   it('reads OPENCHAMBER_OPENCODE_HOSTNAME', () => {
     const result = resolveOpenCodeEnvConfig({ env: { OPENCHAMBER_OPENCODE_HOSTNAME: '0.0.0.0' } });
     expect(result.configuredOpenCodeHostname).toBe('0.0.0.0');
+    expect(result.configuredOpenCodeHostnameExplicit).toBe(true);
+  });
+
+  it('distinguishes the default hostname from an explicit valid pin', () => {
+    expect(resolveOpenCodeEnvConfig({ env: {} }).configuredOpenCodeHostnameExplicit).toBe(false);
   });
 
   it('trims surrounding whitespace', () => {

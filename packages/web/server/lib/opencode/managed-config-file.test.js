@@ -25,6 +25,8 @@ const createHarness = async ({ settings = {}, env = {}, memoryAvailable = true }
       OPENCHAMBER_AGENT_TOOL_URL: 'http://127.0.0.1:3901/api/openchamber/agent-tool',
       OPENCHAMBER_AGENT_TOOL_TOKEN: 'token',
     })),
+    publishSharedService: vi.fn(async () => ({ instanceId: 'shared-instance' })),
+    disposeSharedService: vi.fn(async () => {}),
   };
   const current = { settings };
   const runtime = createManagedConfigRuntime({
@@ -164,5 +166,35 @@ describe('managed OpenCode config file', () => {
 
     expect(agentToolRuntime.materializePlugin).not.toHaveBeenCalled();
     expect(await readConfigFile()).toEqual({ plugins: ['-opencode.browser'] });
+  });
+
+  it('publishes shared callbacks in the effective global config root without a child credential', async () => {
+    const { dataDir, runtime, agentToolRuntime } = await createHarness({
+      settings: { agentControlToolEnabled: false, agentWebToolEnabled: true },
+      env: { OPENCODE_CONFIG_DIR: '/custom/opencode' },
+    });
+
+    const childEnv = await runtime.buildSharedServiceEnv();
+
+    expect(agentToolRuntime.publishSharedService).toHaveBeenCalledWith({
+      configRoot: '/custom/opencode',
+      capabilities: { control: false, web: true, memory: false, notify: false },
+    });
+    expect(childEnv).toEqual({ OPENCODE_CONFIG: path.join(dataDir, MANAGED_CONFIG_FILE_NAME) });
+    expect(childEnv.OPENCHAMBER_AGENT_TOOL_TOKEN).toBeUndefined();
+  });
+
+  it('refreshes shared capabilities and disposes only its callback', async () => {
+    const { runtime, current, agentToolRuntime } = await createHarness({ settings: {} });
+    await runtime.buildSharedServiceEnv();
+    current.settings = { agentControlToolEnabled: false, agentNotifyToolEnabled: true };
+
+    await expect(runtime.refreshManagedConfigFile()).resolves.toEqual({ updated: true });
+    expect(agentToolRuntime.publishSharedService).toHaveBeenLastCalledWith({
+      configRoot: expect.stringContaining('opencode'),
+      capabilities: { control: false, web: true, memory: false, notify: true },
+    });
+    await runtime.disposeSharedService();
+    expect(agentToolRuntime.disposeSharedService).toHaveBeenCalledTimes(1);
   });
 });

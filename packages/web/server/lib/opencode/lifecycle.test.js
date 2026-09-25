@@ -75,6 +75,7 @@ const createRuntime = (overrides = {}, stateOverrides = {}, envOverrides = {}) =
     isOpenCodeReady: false,
     openCodeNotReadySince: 0,
     isExternalOpenCode: false,
+    isSharedOpenCode: false,
     isShuttingDown: false,
     healthCheckInterval: null,
     expressApp: null,
@@ -117,6 +118,7 @@ const createRuntime = (overrides = {}, stateOverrides = {}, envOverrides = {}) =
     buildManagedOpenCodePath: vi.fn(() => '/home/user/.bun/bin:/usr/local/bin:/usr/bin'),
     // Never let a test touch the real `~/.local/share/opencode/opencode.db`.
     topUpV1SessionMigration: vi.fn(() => ({ status: 'skipped', missing: 0, revisited: 0, reason: 'no-database' })),
+    reapManagedOrphanedProcesses: vi.fn(async () => ({ reaped: 0 })),
     getManagedOpenCodeShellEnvSnapshot: vi.fn(() => ({
       PATH: '/home/user/.bun/bin:/usr/local/bin:/usr/bin',
       SHELL_ONLY: 'yes',
@@ -129,6 +131,184 @@ const createRuntime = (overrides = {}, stateOverrides = {}, envOverrides = {}) =
 };
 
 describe('OpenCode lifecycle', () => {
+  it('attaches to a healthy explicitly pinned port before considering a private spawn', async () => {
+    globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ version: '2.0.16' }) }));
+    const connectSharedOpenCode = vi.fn();
+    const runtime = createRuntime({ connectSharedOpenCode });
+    await runtime.bootstrapOpenCodeAtStartup();
+    expect(runtime.testState.isExternalOpenCode).toBe(true);
+    expect(runtime.testState.isOpenCodeReady).toBe(true);
+    expect(runtime.testState.openCodePort).toBe(3001);
+    expect(connectSharedOpenCode).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps shared proxy readiness through a transient failed health probe', async () => {
+    let now = 100_000;
+    globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValue({ ok: true, json: async () => ({ version: '2.0.16' }) });
+    const runtime = createRuntime({ now: () => now }, {
+      isSharedOpenCode: true, isOpenCodeReady: true, openCodePort: 45678,
+    });
+    await runtime.triggerHealthCheck();
+    expect(runtime.testState.isOpenCodeReady).toBe(true);
+    now += 16_000;
+    await runtime.triggerHealthCheck();
+    expect(runtime.testState.isOpenCodeReady).toBe(true);
+  });
+
+  it('rebinds shared readers after discovery even when old activity remains busy', async () => {
+    let now = 100_000;
+    globalThis.fetch = vi.fn(async () => ({ ok: false, status: 503 }));
+    const connectSharedOpenCode = vi.fn(async () => ({ url: 'http://127.0.0.1:45123', password: 'new-password' }));
+    const onOpenCodeRestarted = vi.fn();
+    const runtime = createRuntime({ now: () => now, connectSharedOpenCode, onOpenCodeRestarted, getActiveSessionCount: () => 1 }, {
+      isSharedOpenCode: true, isOpenCodeReady: true, openCodePort: 45678,
+    });
+    for (let probe = 0; probe < 20; probe += 1) {
+      await runtime.triggerHealthCheck();
+      now += 16_000;
+    }
+    expect(connectSharedOpenCode).toHaveBeenCalledWith(expect.objectContaining({ allowStart: false }));
+    expect(onOpenCodeRestarted).toHaveBeenCalledWith({ interruptBusySessions: false });
+    expect(runtime.testState.openCodePort).toBe(45123);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps an unavailable explicit endpoint external when reconnect is requested', async () => {
+    globalThis.fetch = vi.fn(async () => ({ ok: false, status: 503 }));
+    const connectSharedOpenCode = vi.fn();
+    const runtime = createRuntime({ connectSharedOpenCode }, {}, {
+      ENV_CONFIGURED_OPENCODE_HOST: { origin: 'http://127.0.0.1:3001', port: 3001 },
+    });
+    await runtime.bootstrapOpenCodeAtStartup();
+    expect(runtime.testState.isExternalOpenCode).toBe(true);
+    await expect(runtime.restartOpenCode()).rejects.toThrow('not responding');
+    expect(connectSharedOpenCode).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(spawnSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('uses the legacy private managed path for an explicit OpenCode port', async () => {
+    let serverStarted = false;
+    spawnMock.mockImplementation(() => {
+      serverStarted = true;
+      const child = createMockChild();
+      queueMicrotask(() => child.stdout.emit('data', 'server listening on http://127.0.0.1:45678\n'));
+      return child;
+    });
+    globalThis.fetch = vi.fn(async () => ({ ok: serverStarted, status: serverStarted ? 200 : 503, json: async () => ({ version: '2.0.16' }) }));
+    const connectSharedOpenCode = vi.fn();
+    const reapManagedOrphanedProcesses = vi.fn(async () => ({ reaped: 0 }));
+    const runtime = createRuntime({ connectSharedOpenCode, reapManagedOrphanedProcesses });
+
+    await runtime.bootstrapOpenCodeAtStartup();
+
+    expect(reapManagedOrphanedProcesses).toHaveBeenCalledOnce();
+    expect(connectSharedOpenCode).not.toHaveBeenCalled();
+    expect(runtime.testState.isSharedOpenCode).toBe(false);
+    await runtime.testState.openCodeProcess.close();
+  });
+
+  it('keeps shared chat connectivity when tool publication fails', async () => {
+    globalThis.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ version: '2.0.16' }) }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const connectSharedOpenCode = vi.fn(async () => ({ url: 'http://127.0.0.1:45123', password: 'service-password' }));
+    const runtime = createRuntime({
+      connectSharedOpenCode,
+      getSharedOpenCodeEnv: vi.fn(async () => { throw new Error('publish failed'); }),
+    }, {}, { ENV_CONFIGURED_OPENCODE_PORT: null, ENV_EFFECTIVE_PORT: null });
+    try {
+      await runtime.bootstrapOpenCodeAtStartup();
+      expect(runtime.testState.isOpenCodeReady).toBe(true);
+      expect(connectSharedOpenCode).toHaveBeenCalledOnce();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('cancels shared discovery before shutdown can withdraw its callback', async () => {
+    let entered;
+    const discovering = new Promise((resolve) => { entered = resolve; });
+    const connectSharedOpenCode = ({ signal }) => new Promise((resolve, reject) => {
+      entered(signal);
+      signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+    });
+    const runtime = createRuntime({ connectSharedOpenCode }, {}, {
+      ENV_CONFIGURED_OPENCODE_PORT: null, ENV_EFFECTIVE_PORT: null,
+    });
+    const startup = runtime.bootstrapOpenCodeAtStartup();
+    const signal = await discovering;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    runtime.testState.isShuttingDown = true;
+    await runtime.cancelSharedStartup();
+    await startup;
+    expect(signal.aborted).toBe(true);
+    expect(runtime.testState.isOpenCodeReady).toBe(false);
+    expect(runtime.testState.openCodeProcess).toBeNull();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('reconnects a shared service without declaring its busy sessions interrupted', async () => {
+    const onOpenCodeRestarted = vi.fn();
+    const runtime = createRuntime({
+      onOpenCodeRestarted,
+      connectSharedOpenCode: async () => ({ url: 'http://127.0.0.1:45123', password: 'shared-password' }),
+    }, { isSharedOpenCode: true, openCodePort: 45123 });
+    await runtime.restartOpenCode();
+    expect(onOpenCodeRestarted).toHaveBeenCalledWith({ interruptBusySessions: false });
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('never starts a shared service while health recovery is busy and not ready', async () => {
+    let clock = 0;
+    globalThis.fetch = vi.fn(async () => ({ ok: false, status: 503 }));
+    const connectSharedOpenCode = vi.fn(async () => { throw new Error('Shared service is still unavailable'); });
+    const runtime = createRuntime({
+      connectSharedOpenCode,
+      getActiveSessionCount: () => 1,
+      now: () => (clock += 20_000),
+    }, { isSharedOpenCode: true, openCodePort: 45123, openCodeBaseUrl: 'http://127.0.0.1:45123', isOpenCodeReady: true }, {
+      ENV_CONFIGURED_OPENCODE_PORT: null, ENV_EFFECTIVE_PORT: null,
+    });
+
+    for (let count = 0; count < 20; count += 1) await runtime.triggerHealthCheck();
+
+    expect(runtime.testState.isOpenCodeReady).toBe(false);
+    expect(connectSharedOpenCode).toHaveBeenCalledWith(expect.objectContaining({ allowStart: false }));
+    expect(runtime.testState.openCodePort).toBe(45123);
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('reaps only prior registered private orphans before adopting the shared service', async () => {
+    globalThis.fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ version: '2.0.16' }),
+    }));
+    const connectSharedOpenCode = vi.fn(async () => ({ url: 'http://127.0.0.1:45123', password: 'service-password' }));
+    const setOpenCodeAuthState = vi.fn();
+    const reapManagedOrphanedProcesses = vi.fn();
+    const runtime = createRuntime(
+      { connectSharedOpenCode, setOpenCodeAuthState, reapManagedOrphanedProcesses },
+      {},
+      { ENV_CONFIGURED_OPENCODE_PORT: null, ENV_EFFECTIVE_PORT: null },
+    );
+
+    await runtime.bootstrapOpenCodeAtStartup();
+
+    expect(connectSharedOpenCode).toHaveBeenCalledOnce();
+    expect(setOpenCodeAuthState).toHaveBeenCalledWith('service-password', 'shared');
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(reapManagedOrphanedProcesses).toHaveBeenCalledOnce();
+    expect(runtime.testState).toMatchObject({
+      isSharedOpenCode: true,
+      isExternalOpenCode: false,
+      openCodeProcess: null,
+      openCodePort: 45123,
+      openCodeBaseUrl: 'http://127.0.0.1:45123',
+    });
+  });
   it('uses the resolved binary directly on startup and managed restart without an env override', async () => {
     delete process.env.OPENCODE_BINARY;
     const binaries = ['/bundle one/opencode-cli/opencode', '/bundle two/opencode-cli/opencode'];

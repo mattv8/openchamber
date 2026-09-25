@@ -21,4 +21,16 @@ describe('hmr state runtime', () => {
 
     expect(runtime.getOrCreateHmrState().openCodeWorkingDirectory).toBe('/Users/example');
   });
+
+  it('preserves shared-service ownership across HMR', () => {
+    const runtime = createRuntime();
+    const state = runtime.getOrCreateHmrState();
+    runtime.syncStateFromRuntime(state, { openCodeProcess: null, openCodePort: 45678, openCodeBaseUrl: 'http://127.0.0.1:45678', isSharedOpenCode: true });
+
+    expect(runtime.restoreRuntimeFromState({ hmrState: state, userProvidedOpenCodePassword: null })).toMatchObject({
+      isSharedOpenCode: true,
+      openCodeProcess: null,
+      openCodePort: 45678,
+    });
+  });
 });

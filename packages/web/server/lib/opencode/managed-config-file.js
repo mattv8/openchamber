@@ -1,4 +1,5 @@
 import { appendManagedPlugin } from './managed-plugin-config.js';
+import os from 'node:os';
 
 export const MANAGED_CONFIG_FILE_NAME = 'opencode.managed.json';
 
@@ -50,11 +51,29 @@ export const createManagedConfigRuntime = ({
   agentToolRuntime = null,
   readSettings,
   isAgentMemoryAvailable,
+  homedir = os.homedir,
 }) => {
   const filePath = path.join(dataDir, MANAGED_CONFIG_FILE_NAME);
 
   /** The user owns `OPENCODE_CONFIG` when their environment already set it. */
   const ownsConfigFile = () => (env.OPENCODE_CONFIG ?? '').trim().length === 0;
+  const sharedConfigRoot = () => {
+    const explicit = (env.OPENCODE_CONFIG_DIR ?? '').trim();
+    if (explicit) return explicit;
+    const xdg = (env.XDG_CONFIG_HOME ?? '').trim();
+    return path.join(xdg || path.join(homedir(), '.config'), 'opencode');
+  };
+  let sharedActive = false;
+
+  const sharedCapabilities = async () => {
+    const settings = await Promise.resolve(readSettings());
+    return {
+      control: settings?.agentControlToolEnabled !== false,
+      web: settings?.agentWebToolEnabled !== false,
+      memory: isAgentMemoryAvailable() && settings?.agentMemoryToolEnabled === true,
+      notify: settings?.agentNotifyToolEnabled === true,
+    };
+  };
 
   const writeConfigFile = async (pluginDirectories) => {
     await fsPromises.mkdir(dataDir, { recursive: true });
@@ -109,6 +128,26 @@ export const createManagedConfigRuntime = ({
     return { ...childEnv, OPENCODE_CONFIG_CONTENT: content };
   };
 
+  /** Publish a callback that a CLI-owned shared OpenCode service can discover. */
+  const buildSharedServiceEnv = async () => {
+    if (!agentToolRuntime) return ownsConfigFile()
+      ? (await writeConfigFile([]), { OPENCODE_CONFIG: filePath })
+      : { OPENCODE_CONFIG_CONTENT: appendManagedPlugin(env.OPENCODE_CONFIG_CONTENT, DISABLED_BUILTIN_PLUGINS[0], 'managed plugin') };
+    await agentToolRuntime.publishSharedService({ configRoot: sharedConfigRoot(), capabilities: await sharedCapabilities() });
+    sharedActive = true;
+    if (ownsConfigFile()) {
+      await writeConfigFile([]);
+      return { OPENCODE_CONFIG: filePath };
+    }
+    return { OPENCODE_CONFIG_CONTENT: appendManagedPlugin(env.OPENCODE_CONFIG_CONTENT, DISABLED_BUILTIN_PLUGINS[0], 'managed plugin') };
+  };
+
+  const disposeSharedService = async () => {
+    if (!sharedActive || !agentToolRuntime) return;
+    await agentToolRuntime.disposeSharedService();
+    sharedActive = false;
+  };
+
   /**
    * Rewrite the managed config file after a managed-plugin setting changed, so
    * the running OpenCode picks the new plugin list up. A no-op when the user
@@ -117,6 +156,10 @@ export const createManagedConfigRuntime = ({
    * @returns {Promise<{updated: boolean, reason?: string}>}
    */
   const refreshManagedConfigFile = async () => {
+    if (sharedActive) {
+      await agentToolRuntime.publishSharedService({ configRoot: sharedConfigRoot(), capabilities: await sharedCapabilities() });
+      return { updated: true };
+    }
     if (!ownsConfigFile()) return { updated: false, reason: 'external-config' };
     await writeConfigFile(await materializeEnabledPlugins());
     return { updated: true };
@@ -126,6 +169,8 @@ export const createManagedConfigRuntime = ({
     filePath,
     ownsConfigFile,
     buildManagedChildEnv,
+    buildSharedServiceEnv,
+    disposeSharedService,
     refreshManagedConfigFile,
   };
 };

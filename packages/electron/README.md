@@ -8,6 +8,12 @@ This package owns the native shell: windows, menus, deep links, native notificat
 
 Desktop starts the OpenChamber web server in the same Electron main process. There is no separate sidecar subprocess for the OpenChamber server.
 
+The default local OpenCode connection uses the CLI's shared background service.
+Desktop and terminal clients therefore use the same execution owner. Quitting
+OpenChamber closes its web backend and withdraws its tool callback; it leaves
+OpenCode running for other clients. Shared service PIDs and ports are withheld
+from the desktop's managed-process termination fallback.
+
 `main.mjs` imports `@openchamber/web/server/index.js` and calls `startWebUiServer()`. The Electron window then loads the UI from the local server in development, or from packaged `resources/web-dist` assets in packaged builds.
 
 Electron loads `entry.mjs`, not `main.mjs`. Electron holds `ready` until the

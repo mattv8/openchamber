@@ -53,6 +53,24 @@ Forces the package manager used by update operations when auto-detection is wron
 
 ## OpenCode server
 
+By default, OpenChamber uses OpenCode's shared background service so desktop,
+web, VS Code, and terminal clients use one execution owner. Closing OpenChamber
+leaves that service running. Its address and password belong to OpenCode;
+configure the shared listener through OpenCode's `service set` commands.
+
+An explicit `OPENCODE_PORT` without `OPENCODE_SKIP_START`, or an explicit
+`OPENCHAMBER_OPENCODE_HOSTNAME`, retains the private managed-server mode.
+With a pinned port, OpenChamber first connects to a healthy server already
+listening there; otherwise it starts the private server.
+Running that private server beside the CLI service against the same database
+can still cause competing executions. Use the default shared connection when
+you want to switch between OpenChamber and the CLI on the same sessions.
+
+Shared mode does not re-arm imports for OpenCode 1.x sessions created after an
+earlier migration finished. That existing recovery step remains limited to
+private managed startup; rewriting its migration cursor while another client
+uses the shared service would be unsafe.
+
 ### `OPENCODE_HOST`
 
 Connects OpenChamber to an existing OpenCode server. The value must be an `http` or `https` origin with an explicit port and no path, query, or hash. `OPENCODE_HOST` takes precedence over `OPENCODE_PORT`.
