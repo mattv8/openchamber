@@ -99,6 +99,7 @@ var HOST_PUSH_TYPES = new Set([
   "item",
   "resolve",
   "action",
+  "status-control-event",
   "file-open",
   "file-snapshot",
   "file-saved"

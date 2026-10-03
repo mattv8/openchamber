@@ -2,6 +2,7 @@
 import { OPENCHAMBER_SDK_API_VERSION, OPENCHAMBER_SDK_CHANNEL } from './api-version.ts';
 import type { FileEditorChange, FileEditorDocument, FileSnapshotRequest, FileSnapshotResultPayload } from './file-editor.ts';
 import type { GuestSessionWorktree, GuestStorageRequest, GuestStorageResult, GuestWorkspaceQuery, GuestWorkspaceSnapshot, GuestWorkspaceSubscription, GuestWorkspaceUpdate, GuestWorktree } from './workspace.ts';
+import type { GuestStatusControl, GuestStatusControlEvent } from './status-controls.ts';
 
 export type HostThemeMode = 'light' | 'dark';
 
@@ -40,6 +41,14 @@ export type HostThemeTokens = {
   /** Monospace stack for code and identifiers. */
   mono: string;
   radius: string;
+  syntaxKeyword?: string;
+  syntaxString?: string;
+  syntaxNumber?: string;
+  syntaxFunction?: string;
+  syntaxType?: string;
+  syntaxComment?: string;
+  syntaxVariable?: string;
+  syntaxOperator?: string;
 };
 
 export type HostTheme = {
@@ -202,6 +211,11 @@ export type HostReadyContext = {
    * opened from the rail icon or the composer + menu.
    */
   item: GuestItem | null;
+  /** Optional capabilities advertised by a newer host. Absent remains compatible with older hosts. */
+  features?: {
+    deviceStorage?: true;
+    statusControls?: true;
+  };
 };
 
 export type GuestItemRole = 'user' | 'assistant';
@@ -574,6 +588,7 @@ export type HostConnectionMessage = Envelope & { type: 'connection'; payload: { 
 export type HostSettingsMessage = Envelope & { type: 'settings'; payload: { settings: GuestSettings } };
 export type HostSessionLifecycleMessage = Envelope & { type: 'session-lifecycle'; payload: SessionLifecycleEvent };
 export type HostItemMessage = Envelope & { type: 'item'; payload: { item: GuestItem | null } };
+export type HostStatusControlEventMessage = Envelope & { type: 'status-control-event'; payload: GuestStatusControlEvent };
 /** Host → guest request. The guest answers with `resolve-result` carrying the same `id`. */
 export type HostResolveMessage = Envelope & { type: 'resolve'; id: string; payload: ResolveRequest };
 export type HostActionMessage = Envelope & { type: 'action'; id: string; payload: GuestActionItem };
@@ -597,6 +612,7 @@ export type HostMessage =
   | HostSettingsMessage
   | HostSessionLifecycleMessage
   | HostItemMessage
+  | HostStatusControlEventMessage
   | HostResolveMessage
   | HostActionMessage
   | HostFileOpenMessage
@@ -632,6 +648,7 @@ export type GuestGenerateMessage = GuestCall<'generate', GenerateRequest>;
 export type GuestBadgeMessage = GuestCall<'badge', BadgeRequest>;
 export type GuestResizeMessage = GuestCall<'resize', ResizeRequest>;
 export type GuestOpenCommitMessage = GuestCall<'open-commit', OpenCommitRequest>;
+export type GuestStatusControlsMessage = GuestCall<'status-controls', { controls: GuestStatusControl[] }>;
 /** Answers a host `resolve` by `id`. The host sends no `result` back for it. */
 export type GuestResolveResultMessage = Envelope & { type: 'resolve-result'; id: string; payload: ResolveResultPayload };
 /** Completes a host `action`. The host sends no `result` back. */
@@ -675,6 +692,7 @@ export type GuestMessage =
   | GuestBadgeMessage
   | GuestResizeMessage
   | GuestOpenCommitMessage
+  | GuestStatusControlsMessage
   | GuestActionResultMessage
   | GuestResolveResultMessage
   | GuestFileSnapshotResultMessage
@@ -719,6 +737,7 @@ export const isGenerateResult = (
 const HOST_PUSH_TYPES: ReadonlySet<string> = new Set([
   'workspace',
   'ready', 'directory', 'session', 'connection', 'settings', 'session-lifecycle', 'item', 'resolve', 'action',
+  'status-control-event',
   'file-open', 'file-snapshot', 'file-saved',
 ]);
 

@@ -65,6 +65,7 @@ import { linkGuestSession, promptGuestSession, startGuestSession } from '@/lib/g
 import { useGuestsStore } from '@/lib/guests/store';
 import { readGuestWorkspace, observeGuestWorkspace, openGuestSession } from '@/lib/guests/workspace';
 import { guestStorageOperation } from '@/lib/guests/storage';
+import { createGuestStatusControls, type GuestStatusControlBinding } from '@/lib/guests/status-controls';
 import { showGuestToast } from '@/lib/guests/toast';
 import { getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 import { openExternalUrl } from '@/lib/url';
@@ -96,6 +97,9 @@ type PluginPaneProps = {
   onSessionStarted?: () => void;
   /** The guest asked for this content height (`setHeight`). The Work Status section sizes its frame from it. */
   onResize?: (height: number) => void;
+  onStatusControls?: (binding: GuestStatusControlBinding | null) => void;
+  /** The Work Status panel's own directory; null deliberately means no project. */
+  statusDirectory?: string | null;
   /**
    * `surface="file"` only: the editor (`contributes.fileEditors[].id`) to load
    * and the channel that hands it the file. Required together.
@@ -139,13 +143,17 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
   onAttach,
   onSessionStarted,
   onResize,
+  onStatusControls,
+  statusDirectory,
   fileEditor,
 }) => {
   const { t, locale } = useI18n();
   const { currentTheme } = useThemeSystem();
   const effectiveDirectory = useEffectiveDirectory();
   const selectedSessionId = useSessionUIStore((state) => state.currentSessionId);
-  const directory = backgroundAction ? backgroundAction.item.directory ?? '' : effectiveDirectory;
+  const directory = backgroundAction ? backgroundAction.item.directory ?? ''
+    : surface === 'status' && statusDirectory !== undefined ? statusDirectory ?? '' : effectiveDirectory;
+  const statusContextKey = surface === 'status' ? directory : null;
   const currentSessionId = backgroundAction ? backgroundAction.item.sessionId : selectedSessionId;
   const session = useSession(currentSessionId, directory || undefined);
   const sessionStatus = useSessionStatus(currentSessionId ?? '', directory || undefined);
@@ -191,7 +199,11 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
   );
 
   const readableColors = React.useMemo(() => getReadableThemeColors(currentTheme), [currentTheme]);
-  const ready = React.useMemo<HostReadyContext>(() => ({
+  const ready = React.useMemo<HostReadyContext>(() => {
+    const features: NonNullable<HostReadyContext['features']> = {};
+    if (guest?.storageId && globalThis.indexedDB) features.deviceStorage = true;
+    if (surface === 'status' && onStatusControls) features.statusControls = true;
+    return {
     theme: {
       mode: currentTheme.metadata.variant === 'dark' ? 'dark' : 'light',
       tokens: {
@@ -223,6 +235,14 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
         font: readCssVar('--font-sans', HOST_FONT_FALLBACK),
         mono: readCssVar('--font-mono', HOST_MONO_FALLBACK),
         radius: readCssVar('--radius', HOST_RADIUS_FALLBACK),
+        syntaxKeyword: currentTheme.colors.syntax.base.keyword,
+        syntaxString: currentTheme.colors.syntax.base.string,
+        syntaxNumber: currentTheme.colors.syntax.base.number,
+        syntaxFunction: currentTheme.colors.syntax.base.function,
+        syntaxType: currentTheme.colors.syntax.base.type,
+        syntaxComment: currentTheme.colors.syntax.base.comment,
+        syntaxVariable: currentTheme.colors.syntax.base.variable,
+        syntaxOperator: currentTheme.colors.syntax.base.operator,
       },
     },
     locale,
@@ -232,14 +252,16 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
     connection: oauthStatus?.connection ?? EMPTY_GUEST_CONNECTION,
     settings: oauthStatus?.settings ?? {},
     item,
-  }), [currentTheme, readableColors, directory, guest?.backgroundEntry, headless, item, locale, oauthStatus, sessionSnapshot, surface]);
+    features,
+    };
+  }, [currentTheme, readableColors, directory, guest?.backgroundEntry, guest?.storageId, headless, item, locale, oauthStatus, onStatusControls, sessionSnapshot, surface]);
 
   const fileEditorEntry = surface === 'file' && fileEditor
     ? guest?.fileEditors?.find((editor) => editor.id === fileEditor.editorId)?.entry ?? null
     : null;
   // Origins the user approved for this list; the frame policy opens them.
   const approvedOrigins = guest?.capabilities.granted.includes('origins') ? guest.origins ?? [] : [];
-  const frameKey = `${guestId}:${guest?.version ?? ''}:${guestEnabled}:service-${guest?.service?.granted ? '1' : '0'}:origins-${approvedOrigins.join(',')}:${guest?.entry ?? ''}:${guest?.backgroundEntry ?? ''}:${guest?.statusEntry ?? ''}:${fileEditorEntry ?? ''}`;
+  const frameKey = `${guestId}:${guest?.storageId ?? ''}:${guest?.version ?? ''}:${guestEnabled}:service-${guest?.service?.granted ? '1' : '0'}:origins-${approvedOrigins.join(',')}:${guest?.entry ?? ''}:${guest?.backgroundEntry ?? ''}:${guest?.statusEntry ?? ''}:${fileEditorEntry ?? ''}`;
 
   // Scoped auth is minted per mount/version/grant and renewed if an existing
   // iframe navigates after expiry. Healthy documents retain their local state.
@@ -282,6 +304,9 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
   onSessionStartedRef.current = onSessionStarted;
   const onResizeRef = React.useRef(onResize);
   onResizeRef.current = onResize;
+  const onStatusControlsRef = React.useRef(onStatusControls);
+  onStatusControlsRef.current = onStatusControls;
+  const statusControlsRef = React.useRef<ReturnType<typeof createGuestStatusControls> | null>(null);
   const fileChannel = fileEditor?.channel ?? null;
   const fileChannelRef = React.useRef(fileChannel);
   fileChannelRef.current = fileChannel;
@@ -389,9 +414,28 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
     let disposed = false;
     const runtimeKey = getRuntimeKey();
     const requestingGuestId = guestIdRef.current;
+    const installation = guestRef.current;
+    const ownerWindow = iframeRef.current?.contentWindow;
     const currentGuest = () => useGuestsStore.getState().guests.find((entry) => entry.id === requestingGuestId) ?? null;
+    const ownsFrame = () => {
+      const catalog = useGuestsStore.getState();
+      const current = currentGuest();
+      return !disposed && getRuntimeKey() === runtimeKey && catalog.runtimeKey === runtimeKey
+        && catalog.status === 'ready' && Boolean(current && installation && isGuestActive(current)
+          && current.storageId === installation.storageId && current.version === installation.version
+          && current.entry === installation.entry && current.statusEntry === installation.statusEntry)
+        && iframeRef.current?.contentWindow === ownerWindow
+        && (!backgroundAction || backgroundAction.isActive());
+    };
+    const statusControls = createGuestStatusControls({
+      isActive: () => ownsFrame() && surface === 'status',
+      getContext: () => directoryRef.current || null,
+      onChange: (binding) => onStatusControlsRef.current?.(binding),
+      post: (payload) => postToGuest({ channel: OPENCHAMBER_SDK_CHANNEL, v: OPENCHAMBER_SDK_API_VERSION, type: 'status-control-event', payload }),
+    });
+    statusControlsRef.current = statusControls;
     const clearSubscriptions = () => { for (const unsubscribe of subscriptions.values()) unsubscribe(); subscriptions.clear(); };
-    const runtimeUnsubscribe = subscribeRuntimeEndpointChanged(() => { disposed = true; clearSubscriptions(); stopOauthPoll(); });
+    const runtimeUnsubscribe = subscribeRuntimeEndpointChanged(() => { disposed = true; statusControls.dispose(); clearSubscriptions(); stopOauthPoll(); });
     const requireSessions = () => {
       if (!guestMay(currentGuest(), 'sessions')) throw new HostRequestError('NOT_GRANTED', NOT_GRANTED_MESSAGE);
     };
@@ -445,7 +489,12 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
           }));
         },
         workspaceUnsubscribe: (id) => { subscriptions.get(id)?.(); subscriptions.delete(id); },
-        storage: (request) => guestStorageOperation(guestIdRef.current, request),
+        storage: (request) => guestStorageOperation(requestingGuestId, request,
+          installation?.storageId ? { runtimeKey, storageId: installation.storageId, authorize: ownsFrame } : undefined),
+        setStatusControls: (controls) => {
+          if (surface !== 'status' || !onStatusControlsRef.current) throw new HostRequestError('UNSUPPORTED', 'This frame has no status header.');
+          statusControls.set(controls);
+        },
         openSession: (id) => { requireSessions(); openGuestSession(id); },
         toast: (request) => {
           // Full pause: a disabled guest must not spam host toasts while the frame tears down.
@@ -651,11 +700,17 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
     window.addEventListener('message', onMessage);
     return () => {
       disposed = true;
+      statusControls.dispose();
+      if (statusControlsRef.current === statusControls) statusControlsRef.current = null;
       clearSubscriptions();
       runtimeUnsubscribe();
       window.removeEventListener('message', onMessage);
     };
-  }, [acknowledgeHandshake, backgroundAction, connectFileChannel, frameKey, guestEnabled, postToGuest, pushHostState, refreshOauth, registerResolver, sendBackgroundAction, setOauthStatus, src, srcDoc, stopOauthPoll]);
+  }, [acknowledgeHandshake, backgroundAction, connectFileChannel, frameKey, guestEnabled, postToGuest, pushHostState, refreshOauth, registerResolver, sendBackgroundAction, setOauthStatus, src, srcDoc, stopOauthPoll, surface]);
+
+  // A project switch retires header callbacks, not the still-mounted frame's
+  // workspace observers or unrelated in-flight requests.
+  React.useLayoutEffect(() => { statusControlsRef.current?.retire(); }, [statusContextKey]);
 
   React.useEffect(() => {
     if (backgroundAction && (frameStatus === 'error' || !guestEnabled)) {

@@ -102,6 +102,18 @@ describe('parseHostMessage', () => {
     });
   });
 
+  test('keeps known ready features while dropping a future feature', () => {
+    const message = parseHostMessage({
+      channel: OPENCHAMBER_SDK_CHANNEL,
+      v: OPENCHAMBER_SDK_API_VERSION,
+      type: 'ready',
+      payload: { ...readyPayload, features: { statusControls: true, futureCapability: true } },
+    });
+    expect(message?.type).toBe('ready');
+    if (message?.type !== 'ready') throw new Error('Expected ready snapshot');
+    expect(message.payload.features).toEqual({ statusControls: true });
+  });
+
   test('accepts a null directory', () => {
     const message = parseHostMessage({
       channel: OPENCHAMBER_SDK_CHANNEL,

@@ -2,6 +2,7 @@ import {
   HostRequestError,
   type GuestStorageRequest,
   type GuestStorageResult,
+  type GuestStatusControl,
   type GuestWorkspaceQuery,
   type GuestWorkspaceSnapshot,
   type GuestWorkspaceSubscription,
@@ -43,6 +44,7 @@ type HostBridgeEffects = {
   workspaceSubscribe: (subscription: GuestWorkspaceSubscription) => void;
   workspaceUnsubscribe: (subscriptionId: string) => void;
   storage: (request: GuestStorageRequest) => Promise<GuestStorageResult>;
+  setStatusControls: (controls: GuestStatusControl[]) => void;
   openSession: (sessionId: string) => void;
   toast: (request: ToastRequest) => void;
   openUrl: (url: string) => Promise<boolean>;
@@ -245,6 +247,7 @@ export const answerGuestMessage = async (
     case 'workspace-subscribe': effects.workspaceSubscribe(message.payload); return okResult(message.id);
     case 'workspace-unsubscribe': effects.workspaceUnsubscribe(message.payload.subscriptionId); return okResult(message.id);
     case 'storage': return okResult(message.id, await effects.storage(message.payload));
+    case 'status-controls': effects.setStatusControls(message.payload.controls); return okResult(message.id);
     case 'open-session': effects.openSession(message.payload.sessionId); return okResult(message.id);
     // No answer: the pane handles these itself. File editor traffic belongs to
     // its file channel, not to a request/result pair.

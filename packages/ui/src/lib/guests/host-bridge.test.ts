@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 
-import { OPENCHAMBER_SDK_CHANNEL, type GuestMessage, type ResolveResultPayload, type StartSessionRequest, type ToastRequest } from '@openchamber/sdk';
+import { HostRequestError, OPENCHAMBER_SDK_CHANNEL, type GuestMessage, type GuestStatusControl, type ResolveResultPayload, type StartSessionRequest, type ToastRequest } from '@openchamber/sdk';
 import type { GuestFileProxyResult, GuestFileRequest } from './files.ts';
 import type { GuestGenerateProxyResult } from './generate.ts';
 
@@ -25,6 +25,7 @@ const effects = (overrides: Partial<BridgeEffects> = {}): BridgeEffects => ({
   workspaceSubscribe: overrides.workspaceSubscribe ?? (() => {}),
   workspaceUnsubscribe: overrides.workspaceUnsubscribe ?? (() => {}),
   storage: overrides.storage ?? (async () => ({ storage: true, op: 'keys', keys: [] })),
+  setStatusControls: overrides.setStatusControls ?? (() => {}),
   openSession: overrides.openSession ?? (() => {}),
   toast: overrides.toast ?? (() => {}),
   openUrl: overrides.openUrl ?? (async () => true),
@@ -50,6 +51,19 @@ const effects = (overrides: Partial<BridgeEffects> = {}): BridgeEffects => ({
 });
 
 describe('answerGuestMessage', () => {
+  test('publishes status controls through the frame owner and reports unsupported owners', async () => {
+    const controls: GuestStatusControl[] = [{ kind: 'button', id: 'refresh', label: 'Refresh' }];
+    const seen: GuestStatusControl[][] = [];
+    const message: GuestMessage = { channel: OPENCHAMBER_SDK_CHANNEL, v: 1, type: 'status-controls', id: 'header-1', payload: { controls } };
+    const result = await answerGuestMessage(message, effects({ setStatusControls: (next) => { seen.push(next); } }));
+    expect(seen).toEqual([controls]);
+    expect(result).toMatchObject({ type: 'result', id: 'header-1', ok: true });
+    const unsupported = await answerGuestMessage(message, effects({ setStatusControls: () => {
+      throw new HostRequestError('UNSUPPORTED', 'Only mounted status frames own header controls.');
+    } }));
+    expect(unsupported).toMatchObject({ type: 'result', ok: false, code: 'UNSUPPORTED' });
+  });
+
   test('forwards toast buttons and persistence to the host without awaiting a click', async () => {
     const request: ToastRequest = { kind: 'info', message: 'Summary', copy: { text: 'Source' }, dismiss: true, persistent: true };
     const seen: ToastRequest[] = [];

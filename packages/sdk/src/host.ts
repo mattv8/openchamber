@@ -1,5 +1,7 @@
 import { OPENCHAMBER_SDK_API_VERSION, OPENCHAMBER_SDK_CHANNEL } from './api-version.ts';
-import { GUEST_STORAGE_KEY_MAX, GUEST_STORAGE_VALUE_BYTES, type GuestProjectsSnapshot, type GuestWorktreesSnapshot, type GuestSessionsSnapshot, type GuestWorkspaceQuery, type GuestWorkspaceSnapshot, type GuestStorageRequest, type GuestStorageResult } from './workspace.ts';
+import { GUEST_STORAGE_KEY_MAX, GUEST_STORAGE_VALUE_BYTES, type GuestProjectsSnapshot, type GuestWorktreesSnapshot, type GuestSessionsSnapshot, type GuestWorkspaceQuery, type GuestWorkspaceSnapshot, type GuestStorageOptions, type GuestStorageRequest, type GuestStorageResult } from './workspace.ts';
+import type { GuestStatusControl, GuestStatusControlEvent } from './status-controls.ts';
+import { isGuestStatusControls } from './status-controls.ts';
 import type { JsonValue } from './contract.ts';
 import {
   GUEST_FILE_EDITOR_CONTENT_MAX,
@@ -99,10 +101,10 @@ export type HostClient = {
   onSessions: (projectId: string, listener: (snapshot: GuestSessionsSnapshot) => void) => Promise<() => void>;
   openSession: (sessionId: string) => Promise<void>;
   storage: {
-    get: (key: string) => Promise<JsonValue | undefined>;
-    set: (key: string, value: JsonValue) => Promise<void>;
-    delete: (key: string) => Promise<void>;
-    keys: () => Promise<string[]>;
+    get: (key: string, options?: GuestStorageOptions) => Promise<JsonValue | undefined>;
+    set: (key: string, value: JsonValue, options?: GuestStorageOptions) => Promise<void>;
+    delete: (key: string, options?: GuestStorageOptions) => Promise<void>;
+    keys: (options?: GuestStorageOptions) => Promise<string[]>;
   };
   onReady: (listener: (context: HostReadyContext) => void) => () => void;
   onDirectory: (listener: (directory: string | null) => void) => () => void;
@@ -116,6 +118,10 @@ export type HostClient = {
    * the last value; `null` when there is none.
    */
   onItem: (listener: (item: GuestItem | null) => void) => () => void;
+  /** Receive activation of a host-rendered Work Status control. */
+  onStatusControl: (listener: (event: GuestStatusControlEvent) => void) => () => void;
+  /** Replace this status frame's host-rendered controls. Pass [] to clear them. */
+  setStatusControls: (controls: GuestStatusControl[]) => Promise<void>;
   /**
    * Answer the host when the user submits one of this package's
    * `contributes.commands`. Return the chip to attach, or `null` for nothing
@@ -245,6 +251,16 @@ const rejectBadFilePath = (): Promise<never> => Promise.reject(
   new HostRequestError('BAD_PATH', `File path must be 1 to ${GUEST_FILE_PATH_MAX} characters without NUL or backslash.`),
 );
 
+const deviceStorageScope = (options: GuestStorageOptions | undefined): 'device' | undefined => {
+  // Typed callers supply GuestStorageOptions, but extensions may call this JavaScript API without TypeScript.
+  if (options === undefined) return undefined;
+  if (Object(options) !== options || Array.isArray(options)
+    || (options.scope !== undefined && options.scope !== 'instance' && options.scope !== 'device')) {
+    throw new HostRequestError('HOST_REJECTED', 'Storage scope must be "instance" or "device".');
+  }
+  return options.scope === 'device' ? 'device' : undefined;
+};
+
 const nextId = (n: { value: number }): string => {
   n.value += 1;
   return `oc-${n.value}`;
@@ -265,6 +281,7 @@ export const connectHost = (options: HostClientOptions = {}): HostClient => {
   const connectionListeners = new Set<(connection: GuestConnection) => void>();
   const settingsListeners = new Set<(settings: GuestSettings) => void>();
   const itemListeners = new Set<(item: GuestItem | null) => void>();
+  const statusControlListeners = new Set<(event: GuestStatusControlEvent) => void>();
   let resolveHandler: ((request: ResolveRequest) => Promise<AttachIssueRequest | null> | AttachIssueRequest | null) | null = null;
   let actionHandler: ((item: GuestActionItem) => void | Promise<void>) | null = null;
   const fileOpenListeners = new Set<(file: FileEditorDocument) => void>();
@@ -377,6 +394,11 @@ export const connectHost = (options: HostClientOptions = {}): HostClient => {
         lastReady = { ...lastReady, item: message.payload.item };
       }
       emit(itemListeners, message.payload.item);
+      return;
+    }
+
+    if (message.type === 'status-control-event') {
+      emit(statusControlListeners, message.payload);
       return;
     }
 
@@ -564,6 +586,9 @@ export const connectHost = (options: HostClientOptions = {}): HostClient => {
     if (payload.op === 'set' && new TextEncoder().encode(JSON.stringify(payload.value)).length > GUEST_STORAGE_VALUE_BYTES) {
       throw new HostRequestError('HOST_REJECTED', 'Storage value exceeds 64 KiB.');
     }
+    if (payload.scope === 'device' && lastReady?.features?.deviceStorage !== true) {
+      throw new HostRequestError('UNSUPPORTED', 'This host does not support device storage.');
+    }
     const result = await send({ ...envelope, type: 'storage', id: nextId(ids), payload });
     if (!result || !('storage' in result) || result.op !== payload.op) throw new HostRequestError('HOST_REJECTED', 'Host did not return storage data.');
     return result;
@@ -597,14 +622,30 @@ export const connectHost = (options: HostClientOptions = {}): HostClient => {
       await request({ ...envelope, type: 'open-session', id: nextId(ids), payload: { sessionId } });
     },
     storage: {
-      get: async (key) => {
-        const result = await storage({ op: 'get', key });
+      get: async (key, options) => {
+        const scope = deviceStorageScope(options);
+        const payload: GuestStorageRequest = { op: 'get', key };
+        if (scope) payload.scope = scope;
+        const result = await storage(payload);
         return result.op === 'get' && result.found ? result.value : undefined;
       },
-      set: async (key, value) => { await storage({ op: 'set', key, value }); },
-      delete: async (key) => { await storage({ op: 'delete', key }); },
-      keys: async () => {
-        const result = await storage({ op: 'keys' });
+      set: async (key, value, options) => {
+        const scope = deviceStorageScope(options);
+        const payload: GuestStorageRequest = { op: 'set', key, value };
+        if (scope) payload.scope = scope;
+        await storage(payload);
+      },
+      delete: async (key, options) => {
+        const scope = deviceStorageScope(options);
+        const payload: GuestStorageRequest = { op: 'delete', key };
+        if (scope) payload.scope = scope;
+        await storage(payload);
+      },
+      keys: async (options) => {
+        const scope = deviceStorageScope(options);
+        const payload: GuestStorageRequest = { op: 'keys' };
+        if (scope) payload.scope = scope;
+        const result = await storage(payload);
         if (result.op !== 'keys') throw new HostRequestError('HOST_REJECTED', 'Expected storage keys.');
         return result.keys;
       },
@@ -657,6 +698,21 @@ export const connectHost = (options: HostClientOptions = {}): HostClient => {
       return () => {
         itemListeners.delete(listener);
       };
+    },
+    onStatusControl: (listener) => {
+      statusControlListeners.add(listener);
+      return () => {
+        statusControlListeners.delete(listener);
+      };
+    },
+    setStatusControls: (controls) => {
+      if (lastReady?.features?.statusControls !== true) {
+        return Promise.reject(new HostRequestError('UNSUPPORTED', 'This host does not support status controls.'));
+      }
+      if (!isGuestStatusControls(controls)) {
+        return Promise.reject(new HostRequestError('HOST_REJECTED', 'Status controls must have unique bounded ids and valid selected options.'));
+      }
+      return request({ ...envelope, type: 'status-controls', id: nextId(ids), payload: { controls } });
     },
     onResolve: (handler) => {
       resolveHandler = handler;
