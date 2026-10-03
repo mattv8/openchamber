@@ -5,8 +5,14 @@ export const ROW = 36;
 const LANE = 10;
 const MAX_LANES = 8;
 const SVG = 'http://www.w3.org/2000/svg';
-// Lanes cycle through host colour tokens; no literal colours anywhere.
-const LANE_COLORS = ['var(--oc-primary)', 'var(--oc-info)', 'var(--oc-success)', 'var(--oc-warning)', 'var(--oc-error)'];
+// Older hosts lack syntax tokens; the existing semantic palette remains their fallback.
+const LANE_COLORS = [
+  'var(--oc-syntax-keyword, var(--oc-primary))',
+  'var(--oc-syntax-string, var(--oc-info))',
+  'var(--oc-syntax-number, var(--oc-success))',
+  'var(--oc-syntax-function, var(--oc-warning))',
+  'var(--oc-syntax-type, var(--oc-error))',
+];
 
 export type RefKind = 'local' | 'remote' | 'tag';
 
@@ -18,6 +24,7 @@ export const STYLE = `
   .bar { display: flex; align-items: center; gap: 6px; padding: 2px 0 6px; }
   .bar .grow { flex: 1; }
   .picker { display: flex; flex-direction: column; gap: 2px; max-height: 104px; overflow-y: auto; padding: 0 2px 6px; }
+  .bar[hidden], .picker[hidden] { display: none; }
   .picker-group { color: var(--oc-muted); font-size: 11px; padding-top: 2px; }
   .note { color: var(--oc-muted); padding: 6px 2px; }
   .commit { display: flex; flex-direction: column; }

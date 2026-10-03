@@ -6,6 +6,13 @@ import { layoutGraph } from './graph.ts';
 import { STYLE, drawRail, drawRowGraph, element, graphWidth, refBadge, type RefKind } from './view.ts';
 
 const host = connectHost();
+host.onStatusControl((event) => {
+  if (event.id === 'header-refresh') {
+    void load();
+    return;
+  }
+  if (event.id === 'header-mode' && event.value) setMode(event.value);
+});
 const root = document.querySelector<HTMLElement>('#root');
 if (!root) throw new Error('Missing root');
 const style = document.createElement('style');
@@ -78,6 +85,12 @@ let commits: Commit[] = [];
 let uncommitted = 0;
 let note: string | null = 'Loading commits…';
 let openHash: string | null = null;
+let preferencesError: string | null = null;
+let deviceStorageSupported = false;
+let statusControlsSupported = false;
+let statusControlsActive = false;
+let publishedControls: string | null = null;
+let publishingControls: string | null = null;
 const details = new Map<string, DetailState>();
 let generation = 0;
 
@@ -90,14 +103,46 @@ const prefsKey = (dir: string): string => {
   return `prefs:${(hash >>> 0).toString(36)}`;
 };
 
-const savePrefs = () => {
-  if (directory) void host.storage.set(prefsKey(directory), { mode, picked: [...picked].slice(0, 50) }).catch(() => undefined);
+const storageOptions = () => deviceStorageSupported ? { scope: 'device' as const } : undefined;
+
+const reportPreferencesError = (message: string) => {
+  preferencesError = message;
+  render();
 };
 
-const loadPrefs = async (dir: string) => {
-  const stored = prefsSchema.safeParse(await host.storage.get(prefsKey(dir)).catch(() => undefined));
-  mode = stored.success ? stored.data.mode : 'auto';
-  picked = new Set(stored.success ? stored.data.picked : []);
+const savePrefs = () => {
+  if (!directory) return;
+  void host.storage.set(prefsKey(directory), { mode, picked: [...picked].slice(0, 50) }, storageOptions()).catch(() => {
+    reportPreferencesError('Could not save display preferences.');
+  });
+};
+
+const loadPrefs = async (dir: string, useDeviceStorage: boolean) => {
+  let value: unknown;
+  try {
+    value = await host.storage.get(prefsKey(dir), useDeviceStorage ? { scope: 'device' } : undefined);
+  } catch {
+    if (directory === dir && deviceStorageSupported === useDeviceStorage) {
+      reportPreferencesError('Could not load display preferences. Keeping the current view.');
+    }
+    return;
+  }
+  if (directory !== dir || deviceStorageSupported !== useDeviceStorage) return;
+  const stored = prefsSchema.safeParse(value);
+  if (!stored.success && value !== undefined) {
+    reportPreferencesError('Saved display preferences are invalid. Keeping the current view.');
+    return;
+  }
+  preferencesError = null;
+  if (value === undefined) {
+    mode = 'auto';
+    picked = new Set();
+    return;
+  }
+  if (stored.success) {
+    mode = stored.data.mode;
+    picked = new Set(stored.data.picked);
+  }
 };
 
 // ----- Loading -----
@@ -150,20 +195,61 @@ const loadDetail = async (hash: string) => {
 
 const bar = element('div', 'bar');
 const picker = element('div', 'picker');
+const preferencesNotice = element('div', 'note');
 const list = element('div');
-root.append(bar, picker, list);
+root.append(bar, picker, preferencesNotice, list);
+
+const statusControls = () => [
+  {
+    kind: 'select' as const,
+    id: 'header-mode',
+    label: 'Commit range',
+    value: mode,
+    options: [
+      { value: 'auto', label: 'Auto' },
+      { value: 'all', label: 'All' },
+      { value: 'manual', label: 'Manual' },
+    ],
+  },
+  { kind: 'button' as const, id: 'header-refresh', label: 'Refresh', disabled: !directory },
+];
+
+const publishStatusControls = () => {
+  if (!statusControlsSupported) return;
+  const controls = statusControls();
+  const signature = JSON.stringify(controls);
+  if (signature === publishedControls || signature === publishingControls) return;
+  publishingControls = signature;
+  void host.setStatusControls(controls).then(() => {
+    if (publishingControls !== signature) return;
+    publishingControls = null;
+    publishedControls = signature;
+    statusControlsActive = true;
+    render();
+    publishStatusControls();
+  }).catch(() => {
+    if (publishingControls !== signature) return;
+    publishingControls = null;
+    statusControlsActive = false;
+    publishedControls = null;
+    render();
+  });
+};
+
+const setMode = (nextValue: string) => {
+  const next = modeSchema.safeParse(nextValue);
+  if (!next.success || next.data === mode) return;
+  mode = next.data;
+  tabs.update({ activeId: mode });
+  savePrefs();
+  publishStatusControls();
+  void load();
+};
 
 const tabs = mountTabs(bar, {
   items: [{ id: 'auto', label: 'Auto' }, { id: 'all', label: 'All' }, { id: 'manual', label: 'Manual' }],
   activeId: mode,
-  onChange: (id) => {
-    const next = modeSchema.safeParse(id);
-    if (!next.success || next.data === mode) return;
-    mode = next.data;
-    tabs.update({ activeId: mode });
-    savePrefs();
-    void load();
-  },
+  onChange: setMode,
 });
 bar.append(element('span', 'grow'));
 const refresh = mountButton(bar, { label: 'Refresh', variant: 'ghost', size: 'xs', onClick: () => { void load(); } });
@@ -243,6 +329,9 @@ const renderDetail = (card: HTMLElement, commit: Commit) => {
 };
 
 const render = () => {
+  bar.hidden = statusControlsActive;
+  preferencesNotice.hidden = preferencesError === null;
+  preferencesNotice.textContent = preferencesError ?? '';
   refresh.update({ disabled: !directory });
   renderPicker();
   if (note) {
@@ -319,6 +408,20 @@ new ResizeObserver(() => {
 host.onReady((context) => {
   applyHostReady(context, document.documentElement);
   locale = context.locale;
+  const nextDeviceStorage = context.features?.deviceStorage === true;
+  const nextStatusControls = context.features?.statusControls === true;
+  if (deviceStorageSupported !== nextDeviceStorage) {
+    deviceStorageSupported = nextDeviceStorage;
+    if (directory) void loadPrefs(directory, deviceStorageSupported);
+  }
+  if (statusControlsSupported !== nextStatusControls) {
+    statusControlsSupported = nextStatusControls;
+    statusControlsActive = false;
+    publishedControls = null;
+    publishingControls = null;
+    render();
+  }
+  publishStatusControls();
 });
 
 let directorySeen = false;
@@ -326,11 +429,16 @@ host.onDirectory((next) => {
   if (directorySeen && next === directory) return;
   directorySeen = true;
   directory = next;
+  // A project switch retires the host's header callbacks even if the next mode is identical.
+  publishedControls = null;
+  publishingControls = null;
+  statusControlsActive = false;
   commits = []; refs = null; openHash = null; details.clear();
   void (async () => {
-    if (next) await loadPrefs(next);
+    if (next) await loadPrefs(next, deviceStorageSupported);
     if (directory !== next) return;
     tabs.update({ activeId: mode });
+    publishStatusControls();
     void load();
   })();
 });
