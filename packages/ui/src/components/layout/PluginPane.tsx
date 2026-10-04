@@ -5,10 +5,15 @@ import {
   OPENCHAMBER_SDK_API_VERSION,
   EMPTY_GUEST_CONNECTION,
   GUEST_REQUEST_TIMEOUT_MS,
+  GUEST_POPOVER_HEIGHT_MIN,
+  GUEST_POPOVER_HEIGHT_MAX,
   guestFileScope,
   type AttachIssueRequest,
   type GuestHostSurface,
   type GuestItem,
+  type GuestPopoverClosedEvent,
+  type GuestPopoverContext,
+  type GuestPopoverRequest,
   type GuestMessage,
   type HostMessage,
   type HostReadyContext,
@@ -65,6 +70,7 @@ import { linkGuestSession, promptGuestSession, startGuestSession } from '@/lib/g
 import { useGuestsStore } from '@/lib/guests/store';
 import { readGuestWorkspace, observeGuestWorkspace, openGuestSession } from '@/lib/guests/workspace';
 import { guestStorageOperation } from '@/lib/guests/storage';
+import { getGuestPopoverController, guestPopoverOwnerBlocked, positionGuestPopover, type GuestPopoverActivation, type GuestPopoverPosition } from '@/lib/guests/popovers';
 import { createGuestStatusControls, type GuestStatusControlBinding } from '@/lib/guests/status-controls';
 import { showGuestToast } from '@/lib/guests/toast';
 import { getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
@@ -76,6 +82,7 @@ import { useUIStore } from '@/stores/useUIStore';
 import { useInputStore } from '@/sync/input-store';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSession, useSessionStatus } from '@/sync/sync-context';
+import { GuestPopover } from './GuestPopover';
 
 type PluginPaneProps = {
   mode: PluginContextPanelMode;
@@ -105,6 +112,16 @@ type PluginPaneProps = {
    * and the channel that hands it the file. Required together.
    */
   fileEditor?: { editorId: string; channel: GuestFileChannel };
+  /** An overlay child inherits its owner's actual directory, never the current selection. */
+  pinnedDirectory?: string;
+  /** Host-only context for a sandboxed popover child. */
+  popover?: GuestPopoverContext;
+  /** Captured by the owner; guest code cannot select an overlay entry or directory. */
+  popoverHost?: { entry: string; directory: string; context: GuestPopoverContext; activation: GuestPopoverActivation; focus: boolean };
+  /** Synchronous owner lifecycle authority for popover children. */
+  isActive?: () => boolean;
+  onPopoverClosed?: (event: GuestPopoverClosedEvent) => void;
+  onPopoverActivity?: (active: boolean) => void;
 };
 
 // Sandboxed frames without allow-same-origin have an opaque origin.
@@ -146,18 +163,30 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
   onStatusControls,
   statusDirectory,
   fileEditor,
+  pinnedDirectory,
+  popover,
+  popoverHost,
+  isActive,
+  onPopoverClosed,
+  onPopoverActivity,
 }) => {
   const { t, locale } = useI18n();
   const { currentTheme } = useThemeSystem();
   const effectiveDirectory = useEffectiveDirectory();
   const selectedSessionId = useSessionUIStore((state) => state.currentSessionId);
-  const directory = backgroundAction ? backgroundAction.item.directory ?? ''
-    : surface === 'status' && statusDirectory !== undefined ? statusDirectory ?? '' : effectiveDirectory;
+  const directory = popoverHost?.directory ?? pinnedDirectory ?? (backgroundAction ? backgroundAction.item.directory ?? ''
+    : surface === 'status' && statusDirectory !== undefined ? statusDirectory ?? '' : effectiveDirectory);
   const statusContextKey = surface === 'status' ? directory : null;
   const currentSessionId = backgroundAction ? backgroundAction.item.sessionId : selectedSessionId;
   const session = useSession(currentSessionId, directory || undefined);
   const sessionStatus = useSessionStatus(currentSessionId ?? '', directory || undefined);
   const iframeRef = React.useRef<HTMLIFrameElement>(null);
+  const [activePopover, setActivePopover] = React.useState<{ request: GuestPopoverRequest; position: GuestPopoverPosition; entry: string; directory: string; activation: GuestPopoverActivation } | null>(null);
+  const activePopoverRef = React.useRef<typeof activePopover>(null);
+  const popoverCloseTimerRef = React.useRef<number | null>(null);
+  const popoverAnchorActiveRef = React.useRef(false);
+  const popoverOverlayActiveRef = React.useRef(false);
+  const closeActivePopoverRef = React.useRef<(reason: GuestPopoverClosedEvent['reason']) => void>(() => {});
   const guestId = pluginIdFromMode(mode);
   const guest = useGuestsStore((state) => state.guests.find((entry) => entry.id === guestId) ?? null);
   const catalogStatus = useGuestsStore((state) => state.status);
@@ -203,6 +232,8 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
     const features: NonNullable<HostReadyContext['features']> = {};
     if (guest?.storageId && globalThis.indexedDB) features.deviceStorage = true;
     if (surface === 'status' && onStatusControls) features.statusControls = true;
+    if (!popoverHost && !popover && !headless && !isVSCodeRuntime() && !isMobileSurfaceRuntime()
+      && (surface === 'panel' || surface === 'page' || surface === 'status')) features.popovers = true;
     return {
     theme: {
       mode: currentTheme.metadata.variant === 'dark' ? 'dark' : 'light',
@@ -252,28 +283,29 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
     connection: oauthStatus?.connection ?? EMPTY_GUEST_CONNECTION,
     settings: oauthStatus?.settings ?? {},
     item,
+    popover: popoverHost?.context ?? popover,
     features,
     };
-  }, [currentTheme, readableColors, directory, guest?.backgroundEntry, guest?.storageId, headless, item, locale, oauthStatus, onStatusControls, sessionSnapshot, surface]);
+  }, [currentTheme, readableColors, directory, guest?.backgroundEntry, guest?.storageId, headless, item, locale, oauthStatus, onStatusControls, popover, popoverHost, sessionSnapshot, surface]);
 
   const fileEditorEntry = surface === 'file' && fileEditor
     ? guest?.fileEditors?.find((editor) => editor.id === fileEditor.editorId)?.entry ?? null
     : null;
   // Origins the user approved for this list; the frame policy opens them.
   const approvedOrigins = guest?.capabilities.granted.includes('origins') ? guest.origins ?? [] : [];
-  const frameKey = `${guestId}:${guest?.storageId ?? ''}:${guest?.version ?? ''}:${guestEnabled}:service-${guest?.service?.granted ? '1' : '0'}:origins-${approvedOrigins.join(',')}:${guest?.entry ?? ''}:${guest?.backgroundEntry ?? ''}:${guest?.statusEntry ?? ''}:${fileEditorEntry ?? ''}`;
+  const frameKey = `${guestId}:${guest?.storageId ?? ''}:${guest?.version ?? ''}:${guestEnabled}:grants-${guest?.capabilities.granted.join(',') ?? ''}:service-${guest?.service?.granted ? '1' : '0'}:origins-${approvedOrigins.join(',')}:${guest?.entry ?? ''}:${guest?.backgroundEntry ?? ''}:${guest?.statusEntry ?? ''}:${guest?.pageEntry ?? ''}:${guest?.attachEntry ?? ''}:${fileEditorEntry ?? ''}:popover-${popoverHost?.context.id ?? popover?.id ?? ''}`;
 
   // Scoped auth is minted per mount/version/grant and renewed if an existing
   // iframe navigates after expiry. Healthy documents retain their local state.
   // Visible surfaces only load panel/page entries. Hidden execution prefers
   // background.entry and falls back to panel.entry for existing extensions.
-  const guestEntry = guest
+  const guestEntry = popoverHost?.entry ?? (guest
     ? headless ? guest.backgroundEntry ?? guest.entry ?? null
       : surface === 'page' ? guest.pageEntry ?? null
         : surface === 'status' ? guest.statusEntry ?? null
         : surface === 'file' ? fileEditorEntry
         : surface === 'dialog' && guest.attachEntry ? guest.attachEntry : guest.entry ?? null
-    : null;
+    : null);
   const { src, srcDoc, status: frameStatus, recoverExpiredNavigation, acknowledgeHandshake } = useGuestFrameUrl({
     guestId, entry: guestEntry, instanceKey: frameKey, enabled: guestEnabled, origins: approvedOrigins,
   });
@@ -290,6 +322,14 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
   guestIdRef.current = guestId;
   const guestEnabledRef = React.useRef(guestEnabled);
   guestEnabledRef.current = guestEnabled;
+  const isActiveRef = React.useRef(isActive);
+  isActiveRef.current = isActive;
+  const popoverHostRef = React.useRef(popoverHost);
+  popoverHostRef.current = popoverHost;
+  const onPopoverClosedRef = React.useRef(onPopoverClosed);
+  onPopoverClosedRef.current = onPopoverClosed;
+  const onPopoverActivityRef = React.useRef(onPopoverActivity);
+  onPopoverActivityRef.current = onPopoverActivity;
   const guestRef = React.useRef(guest);
   guestRef.current = guest;
   const guestAuthRef = React.useRef(guest?.integration?.auth);
@@ -393,6 +433,42 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
     postToGuest(buildItemMessage(readyRef.current.item));
   }, [postToGuest]);
 
+  const clearPopoverCloseTimer = React.useCallback(() => {
+    if (popoverCloseTimerRef.current != null) {
+      window.clearTimeout(popoverCloseTimerRef.current);
+      popoverCloseTimerRef.current = null;
+    }
+  }, []);
+  const schedulePopoverClose = React.useCallback((activation: GuestPopoverActivation, reason: GuestPopoverClosedEvent['reason']) => {
+    clearPopoverCloseTimer();
+    popoverCloseTimerRef.current = window.setTimeout(() => {
+      if (activePopoverRef.current?.activation !== activation || popoverAnchorActiveRef.current || popoverOverlayActiveRef.current) return;
+      closeActivePopoverRef.current(reason);
+    }, 250);
+  }, [clearPopoverCloseTimer]);
+  const closeActivePopover = React.useCallback((reason: GuestPopoverClosedEvent['reason']) => {
+    clearPopoverCloseTimer();
+    const active = activePopoverRef.current;
+    if (!active) return;
+    getGuestPopoverController(document).release(active.activation);
+    activePopoverRef.current = null;
+    popoverAnchorActiveRef.current = false;
+    popoverOverlayActiveRef.current = false;
+    setActivePopover(null);
+    if (reason === 'escape') iframeRef.current?.focus();
+    iframeRef.current?.contentWindow?.postMessage({
+      channel: OPENCHAMBER_SDK_CHANNEL,
+      v: OPENCHAMBER_SDK_API_VERSION,
+      type: 'popover-closed',
+      payload: { id: active.request.id, reason },
+    }, OPAQUE_FRAME_TARGET_ORIGIN);
+  }, [clearPopoverCloseTimer]);
+  closeActivePopoverRef.current = closeActivePopover;
+  React.useEffect(() => () => closeActivePopover('owner'), [closeActivePopover]);
+  React.useLayoutEffect(() => {
+    if (!popoverHost && !popover) closeActivePopover('owner');
+  }, [closeActivePopover, directory, frameKey, popover, popoverHost]);
+
   React.useEffect(() => {
     if (!guest?.integration) {
       return;
@@ -411,20 +487,33 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
 
   React.useEffect(() => {
     const subscriptions = new Map<string, () => void>();
+    const childPopover = popoverHostRef.current;
     let disposed = false;
     const runtimeKey = getRuntimeKey();
     const requestingGuestId = guestIdRef.current;
     const installation = guestRef.current;
-    const ownerWindow = iframeRef.current?.contentWindow;
+    const authorizationSignature = (candidate: typeof installation) => JSON.stringify({
+      storageId: candidate?.storageId,
+      version: candidate?.version,
+      entry: candidate?.entry,
+      statusEntry: candidate?.statusEntry,
+      pageEntry: candidate?.pageEntry,
+      attachEntry: candidate?.attachEntry,
+      origins: candidate?.origins ?? [],
+      grants: candidate?.capabilities.granted ?? [],
+      service: candidate?.service?.granted ?? false,
+    });
+    const installationAuthorization = authorizationSignature(installation);
+    const ownerFrame = iframeRef.current;
     const currentGuest = () => useGuestsStore.getState().guests.find((entry) => entry.id === requestingGuestId) ?? null;
     const ownsFrame = () => {
       const catalog = useGuestsStore.getState();
       const current = currentGuest();
       return !disposed && getRuntimeKey() === runtimeKey && catalog.runtimeKey === runtimeKey
         && catalog.status === 'ready' && Boolean(current && installation && isGuestActive(current)
-          && current.storageId === installation.storageId && current.version === installation.version
-          && current.entry === installation.entry && current.statusEntry === installation.statusEntry)
-        && iframeRef.current?.contentWindow === ownerWindow
+          && authorizationSignature(current) === installationAuthorization)
+        && iframeRef.current === ownerFrame
+        && (!isActiveRef.current || isActiveRef.current())
         && (!backgroundAction || backgroundAction.isActive());
     };
     const statusControls = createGuestStatusControls({
@@ -435,7 +524,7 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
     });
     statusControlsRef.current = statusControls;
     const clearSubscriptions = () => { for (const unsubscribe of subscriptions.values()) unsubscribe(); subscriptions.clear(); };
-    const runtimeUnsubscribe = subscribeRuntimeEndpointChanged(() => { disposed = true; statusControls.dispose(); clearSubscriptions(); stopOauthPoll(); });
+    const runtimeUnsubscribe = subscribeRuntimeEndpointChanged(() => { disposed = true; closeActivePopover('owner'); statusControls.dispose(); clearSubscriptions(); stopOauthPoll(); });
     const requireSessions = () => {
       if (!guestMay(currentGuest(), 'sessions')) throw new HostRequestError('NOT_GRANTED', NOT_GRANTED_MESSAGE);
     };
@@ -444,7 +533,8 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
       if (!frame || event.source !== frame.contentWindow) return;
       const parsed = guestMessageSchema.safeParse(event.data);
       if (!parsed.success) return;
-      if (disposed || getRuntimeKey() !== runtimeKey || (backgroundAction && !backgroundAction.isActive())) return;
+      if (disposed || getRuntimeKey() !== runtimeKey || (backgroundAction && !backgroundAction.isActive())
+        || (isActiveRef.current && !isActiveRef.current())) return;
       // The frame's identity is the guest id; a payload naming another
       // provider would attach or link under a different guest's name.
       const message = withOwnProviderId(parsed.data, guestIdRef.current);
@@ -455,6 +545,7 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
           type: 'result', id: message.id, ok: false, error: 'Extension is unavailable.', code: 'DISABLED' });
         return;
       }
+      if (!ownsFrame()) return;
 
       if (message.type === 'hello') {
         acknowledgeHandshake();
@@ -484,7 +575,7 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
           subscriptions.delete(subscriptionId);
           if (subscriptions.size >= 32) throw new HostRequestError('HOST_REJECTED', 'At most 32 workspace subscriptions per frame.');
           subscriptions.set(subscriptionId, observeGuestWorkspace(query, guestIdRef.current, (snapshot) => {
-            if (!disposed && guestMay(guestRef.current, 'sessions')) postToGuest({ channel: OPENCHAMBER_SDK_CHANNEL, v: OPENCHAMBER_SDK_API_VERSION,
+            if (ownsFrame() && guestMay(guestRef.current, 'sessions')) postToGuest({ channel: OPENCHAMBER_SDK_CHANNEL, v: OPENCHAMBER_SDK_API_VERSION,
               type: 'workspace', payload: { subscriptionId, snapshot } });
           }));
         },
@@ -561,6 +652,11 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
           t: translateRef.current,
         }),
         close: () => {
+          if (childPopover || popover) {
+            const context = childPopover?.context ?? popover;
+            if (context) onPopoverClosedRef.current?.({ id: context.id, reason: 'closed' });
+            return;
+          }
           onDismissRef.current?.();
         },
         oauthStart: async () => {
@@ -691,22 +787,85 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
           }
           waiter({ ok: true, item: payload.item });
         },
+        openPopover: (request) => {
+          if (childPopover || popover || headless || isVSCodeRuntime() || isMobileSurfaceRuntime()
+            || !(surface === 'panel' || surface === 'page' || surface === 'status')) {
+            throw new HostRequestError('UNSUPPORTED', 'This frame cannot open a popover.');
+          }
+          const frameBounds = iframeRef.current?.getBoundingClientRect();
+          const frame = iframeRef.current;
+          if (!frameBounds || !frame) throw new HostRequestError('HOST_REJECTED', 'The popover owner is unavailable.');
+          if (guestPopoverOwnerBlocked(frame)) {
+            throw new HostRequestError('HOST_REJECTED', 'A host dialog is active.');
+          }
+          const ownerFocused = document.activeElement === frame;
+          if (request.focus && !ownerFocused) {
+            throw new HostRequestError('HOST_REJECTED', 'Popover focus requires keyboard interaction with its owner.');
+          }
+          const position = positionGuestPopover({
+            anchor: request.anchor,
+            width: request.width,
+            height: request.height,
+            side: request.side,
+            frame: {
+              left: frameBounds.left, top: frameBounds.top, width: frameBounds.width, height: frameBounds.height,
+              clientWidth: frame.clientWidth, clientHeight: frame.clientHeight,
+            },
+            viewport: { width: window.innerWidth, height: window.innerHeight },
+          });
+          if (!position) throw new HostRequestError('HOST_REJECTED', 'The popover anchor is not visible.');
+          if (!guestEntry) throw new HostRequestError('UNSUPPORTED', 'This extension has no entry for a popover.');
+          const capturedDirectory = directoryRef.current ?? '';
+          const activation = getGuestPopoverController(document).claim({
+            id: request.id,
+            authorize: () => ownsFrame() && directoryRef.current === capturedDirectory && !guestPopoverOwnerBlocked(frame),
+            close: (reason) => closeActivePopoverRef.current(reason),
+          });
+          const next = { request, position, entry: guestEntry, directory: capturedDirectory, activation };
+          popoverAnchorActiveRef.current = true;
+          popoverOverlayActiveRef.current = false;
+          activePopoverRef.current = next;
+          setActivePopover(next);
+        },
+        closePopover: (id, reason) => {
+          if (childPopover || popover) {
+            const context = childPopover?.context ?? popover;
+            if (id !== context?.id) throw new HostRequestError('HOST_REJECTED', 'A popover may close only itself.');
+            onPopoverClosedRef.current?.({ id, reason: reason ?? 'closed' });
+            return;
+          }
+          if (activePopoverRef.current?.request.id === id) closeActivePopover(reason ?? 'closed');
+        },
+        setPopoverAnchorActive: (id, active) => {
+          if (childPopover || popover) {
+            const context = childPopover?.context ?? popover;
+            if (id !== context?.id) throw new HostRequestError('HOST_REJECTED', 'A popover may report only its own activity.');
+            onPopoverActivityRef.current?.(active);
+            return;
+          }
+          if (activePopoverRef.current?.request.id !== id) return;
+          clearPopoverCloseTimer();
+          popoverAnchorActiveRef.current = active;
+          if (!active) {
+            schedulePopoverClose(activePopoverRef.current.activation, 'anchor');
+          }
+        },
       }).then((reply) => {
-        if (reply && !disposed && frame === iframeRef.current && getRuntimeKey() === runtimeKey
-          && (!backgroundAction || backgroundAction.isActive())) postToGuest(reply);
+        if (reply && ownsFrame() && frame === iframeRef.current) postToGuest(reply);
       });
     };
 
     window.addEventListener('message', onMessage);
     return () => {
       disposed = true;
+      if (!childPopover) closeActivePopover('owner');
       statusControls.dispose();
       if (statusControlsRef.current === statusControls) statusControlsRef.current = null;
       clearSubscriptions();
       runtimeUnsubscribe();
       window.removeEventListener('message', onMessage);
     };
-  }, [acknowledgeHandshake, backgroundAction, connectFileChannel, frameKey, guestEnabled, postToGuest, pushHostState, refreshOauth, registerResolver, sendBackgroundAction, setOauthStatus, src, srcDoc, stopOauthPoll, surface]);
+  }, [acknowledgeHandshake, backgroundAction, clearPopoverCloseTimer, closeActivePopover, connectFileChannel, frameKey, guestEnabled, guestEntry, headless, popover, postToGuest, pushHostState, refreshOauth, registerResolver, schedulePopoverClose, sendBackgroundAction, setOauthStatus, src, srcDoc, stopOauthPoll, surface]);
 
   // A project switch retires header callbacks, not the still-mounted frame's
   // workspace observers or unrelated in-flight requests.
@@ -742,7 +901,7 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
 
   React.useEffect(() => {
     // A Work Status section or a file editor is not a rail tab and may be the package's only frame.
-    if (headless || surface === 'status' || surface === 'file' || catalogStatus !== 'ready' || guest?.entry) {
+    if (headless || surface === 'status' || surface === 'file' || surface === 'popover' || catalogStatus !== 'ready' || guest?.entry) {
       return;
     }
     closeGuestTabsEverywhere(mode);
@@ -778,7 +937,8 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
   }
 
   return (
-    <iframe
+    <>
+      <iframe
       ref={iframeRef}
       key={frameKey}
       title={guest.name}
@@ -788,9 +948,11 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
       className={cn(
         'h-full w-full min-h-0 min-w-0 border-0 overflow-hidden',
         // The attach window and the Work Status card draw their own chrome behind the page.
-        surface === 'dialog' || surface === 'status' ? 'bg-transparent' : 'bg-[var(--surface-background)]',
+        surface === 'dialog' || surface === 'status' || surface === 'popover' ? 'bg-transparent' : 'bg-[var(--surface-background)]',
       )}
       onLoad={() => {
+        if (!popoverHost && !popover) closeActivePopover('owner');
+        if (popoverHost?.focus && isActiveRef.current?.()) iframeRef.current?.focus();
         // A kept-alive iframe can navigate again after its scoped URL token
         // expires. Recover on navigation, never by periodically reloading a
         // healthy extension and discarding its in-memory state.
@@ -800,6 +962,74 @@ export const PluginPane: React.FC<PluginPaneProps> = ({
         registerResolver();
         sendBackgroundAction();
       }}
-    />
+      />
+      {activePopover ? (
+        <GuestPopover
+          position={activePopover.position}
+          focused={Boolean(activePopover.request.focus)}
+          label={guest.name}
+          ownerFrame={iframeRef.current}
+          onClose={(reason) => closeActivePopover(reason)}
+          onEnter={() => {
+            popoverOverlayActiveRef.current = true;
+            clearPopoverCloseTimer();
+          }}
+          onLeave={() => {
+            popoverOverlayActiveRef.current = false;
+            schedulePopoverClose(activePopover.activation, 'outside');
+          }}
+          onOutsideHover={() => {
+            if (!popoverAnchorActiveRef.current && !popoverOverlayActiveRef.current && popoverCloseTimerRef.current !== null) return;
+            popoverAnchorActiveRef.current = false;
+            popoverOverlayActiveRef.current = false;
+            schedulePopoverClose(activePopover.activation, 'outside');
+          }}
+        >
+          <PluginPane
+            mode={mode}
+            surface="popover"
+            item={null}
+            popoverHost={{
+              entry: activePopover.entry,
+              directory: activePopover.directory,
+              context: { id: activePopover.request.id, data: activePopover.request.data },
+              activation: activePopover.activation,
+              focus: Boolean(activePopover.request.focus),
+            }}
+            isActive={() => getGuestPopoverController(document).authorize(activePopover.activation)}
+            onResize={(height) => {
+              const current = activePopoverRef.current;
+              const frame = iframeRef.current;
+              if (!current || current.activation !== activePopover.activation || !frame
+                || !getGuestPopoverController(document).authorize(current.activation)) return;
+              // The guest reports content height; include the host's two border pixels.
+              const nextHeight = Math.max(GUEST_POPOVER_HEIGHT_MIN, Math.min(GUEST_POPOVER_HEIGHT_MAX, height + 2));
+              if (current.request.height === nextHeight) return;
+              const bounds = frame.getBoundingClientRect();
+              const request = { ...current.request, height: nextHeight };
+              const position = positionGuestPopover({
+                ...request,
+                frame: { left: bounds.left, top: bounds.top, width: bounds.width, height: bounds.height,
+                  clientWidth: frame.clientWidth, clientHeight: frame.clientHeight },
+                viewport: { width: window.innerWidth, height: window.innerHeight },
+              });
+              if (!position) { closeActivePopover('anchor'); return; }
+              const next = { ...current, request, position };
+              activePopoverRef.current = next;
+              setActivePopover(next);
+            }}
+            onPopoverClosed={(event) => {
+              if (activePopoverRef.current?.request.id === event.id) closeActivePopover(event.reason);
+            }}
+            onPopoverActivity={(active) => {
+              if (activePopoverRef.current?.activation !== activePopover.activation) return;
+              popoverOverlayActiveRef.current = active;
+              if (active) clearPopoverCloseTimer();
+              else schedulePopoverClose(activePopover.activation, 'outside');
+            }}
+          />
+        </GuestPopover>
+      ) : null}
+    </>
   );
 };

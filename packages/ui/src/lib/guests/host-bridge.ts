@@ -12,6 +12,7 @@ import {
   OPENCHAMBER_SDK_CHANNEL,
   type AttachIssueRequest,
   type GuestItem,
+  type GuestPopoverRequest,
   type PromptRequest,
   type PromptResult,
   type SessionLifecycleEvent,
@@ -86,6 +87,9 @@ type HostBridgeEffects = {
   resize: (height: number) => void;
   /** The guest answered a host `resolve` with this id. Not a request, so no `result` goes back. */
   resolveResult: (id: string, payload: ResolveResultPayload) => void;
+  openPopover?: (request: GuestPopoverRequest) => void;
+  closePopover?: (id: string, reason: 'closed' | 'escape' | undefined) => void;
+  setPopoverAnchorActive?: (id: string, active: boolean) => void;
 };
 
 export const buildReadyMessage = (payload: HostReadyContext): HostMessage => ({
@@ -379,6 +383,18 @@ export const answerGuestMessage = async (
     case 'resolve-result':
       effects.resolveResult(message.id, message.payload);
       return null;
+    case 'popover-open':
+      if (!effects.openPopover) return errorResult(message.id, 'This host does not support popovers.', 'UNSUPPORTED');
+      effects.openPopover(message.payload);
+      return okResult(message.id);
+    case 'popover-close':
+      if (!effects.closePopover) return errorResult(message.id, 'This host does not support popovers.', 'UNSUPPORTED');
+      effects.closePopover(message.payload.id, message.payload.reason);
+      return okResult(message.id);
+    case 'popover-anchor':
+      if (!effects.setPopoverAnchorActive) return errorResult(message.id, 'This host does not support popovers.', 'UNSUPPORTED');
+      effects.setPopoverAnchorActive(message.payload.id, message.payload.active);
+      return okResult(message.id);
   }
   } catch (error) {
     if (!('id' in message)) return null;

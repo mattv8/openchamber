@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { guestSessionWorktreeSchema, guestStorageRequestSchema, guestStorageResultSchema, guestWorkspaceQuerySchema, guestWorkspaceSnapshotSchema } from './workspace-schemas.ts';
 import { guestStatusControlEventSchema, guestStatusControlsSchema } from './status-control-schemas.ts';
+import { guestPopoverClosedEventSchema, guestPopoverDataSchema, guestPopoverRequestSchema } from './popover-schemas.ts';
 
 import { OPENCHAMBER_SDK_API_VERSION, OPENCHAMBER_SDK_CHANNEL } from './api-version.ts';
 import {
@@ -229,13 +230,15 @@ const readyPayloadSchema = z.object({
   locale: z.string().min(1),
   directory: z.string().nullable(),
   session: sessionSnapshotSchema,
-  surface: z.enum(['panel', 'dialog', 'page', 'background', 'status', 'file']),
+  surface: z.enum(['panel', 'dialog', 'page', 'background', 'status', 'file', 'popover']),
   connection: guestConnectionSchema,
   settings: guestSettingsSchema,
   item: guestItemSchema,
+  popover: z.object({ id: z.string().min(1).max(80), data: guestPopoverDataSchema }).strict().optional(),
   features: z.object({
     deviceStorage: z.literal(true).optional(),
     statusControls: z.literal(true).optional(),
+    popovers: z.literal(true).optional(),
   }).optional(),
 });
 
@@ -337,6 +340,7 @@ export const hostMessageSchema = z.union([
     type: z.literal('status-control-event'),
     payload: guestStatusControlEventSchema,
   }),
+  z.object({ ...envelope, type: z.literal('popover-closed'), payload: guestPopoverClosedEventSchema }),
   z.object({
     ...envelope,
     type: z.literal('resolve'),
@@ -408,6 +412,9 @@ export const guestMessageSchema = z.discriminatedUnion('type', [
     id: z.string().min(1),
     payload: z.object({ controls: guestStatusControlsSchema }).strict(),
   }),
+  z.object({ ...envelope, type: z.literal('popover-open'), id: z.string().min(1), payload: guestPopoverRequestSchema }),
+  z.object({ ...envelope, type: z.literal('popover-close'), id: z.string().min(1), payload: z.object({ id: z.string().min(1).max(80), reason: z.enum(['closed', 'escape']).optional() }).strict() }),
+  z.object({ ...envelope, type: z.literal('popover-anchor'), id: z.string().min(1), payload: z.object({ id: z.string().min(1).max(80), active: z.boolean() }).strict() }),
   z.object({ ...envelope, type: z.literal('open-session'), id: z.string().min(1), payload: z.object({ sessionId: z.string().min(1).max(1024) }) }),
   z.object({
     ...envelope,

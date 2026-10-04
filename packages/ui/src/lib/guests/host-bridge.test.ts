@@ -48,6 +48,9 @@ const effects = (overrides: Partial<BridgeEffects> = {}): BridgeEffects => ({
   resize: overrides.resize ?? (() => {}),
   openCommit: overrides.openCommit ?? (async () => ({ ok: true })),
   resolveResult: overrides.resolveResult ?? (() => {}),
+  openPopover: overrides.openPopover ?? (() => {}),
+  closePopover: overrides.closePopover ?? (() => {}),
+  setPopoverAnchorActive: overrides.setPopoverAnchorActive ?? (() => {}),
 });
 
 describe('answerGuestMessage', () => {
@@ -594,6 +597,29 @@ describe('guestSessionLifecyclePhase', () => {
 });
 
 describe('badge and resolve-result', () => {
+  test('routes popover lifecycle requests through the owning pane', async () => {
+    const seen: string[] = [];
+    const base = { channel: OPENCHAMBER_SDK_CHANNEL, v: 1 } as const;
+    const open = await answerGuestMessage({ ...base, type: 'popover-open', id: 'popover-call', payload: {
+      id: 'preview-1', anchor: { x: 10, y: 10, width: 20, height: 20 }, width: 160, height: 48, data: null,
+    } }, effects({ openPopover: (request) => { seen.push(`open:${request.id}`); } }));
+    const active = await answerGuestMessage({ ...base, type: 'popover-anchor', id: 'popover-active', payload: { id: 'preview-1', active: false } }, effects({ setPopoverAnchorActive: (id, value) => { seen.push(`active:${id}:${value}`); } }));
+    const close = await answerGuestMessage({ ...base, type: 'popover-close', id: 'popover-close', payload: { id: 'preview-1', reason: 'escape' } }, effects({ closePopover: (id, reason) => { seen.push(`close:${id}:${reason}`); } }));
+    expect(seen).toEqual(['open:preview-1', 'active:preview-1:false', 'close:preview-1:escape']);
+    expect(open).toMatchObject({ ok: true });
+    expect(active).toMatchObject({ ok: true });
+    expect(close).toMatchObject({ ok: true });
+  });
+
+  test('refuses popovers when the mounted owner has no overlay handler', async () => {
+    const reply = await answerGuestMessage({
+      channel: OPENCHAMBER_SDK_CHANNEL, v: 1, type: 'popover-open', id: 'popover-call', payload: {
+        id: 'preview-1', anchor: { x: 10, y: 10, width: 20, height: 20 }, width: 160, height: 48, data: null,
+      },
+    }, { ...effects(), openPopover: undefined });
+    expect(reply).toMatchObject({ type: 'result', ok: false, code: 'UNSUPPORTED' });
+  });
+
   test('badge sets the count and answers ok', async () => {
     const seen: Array<number | null> = [];
     const reply = await answerGuestMessage({

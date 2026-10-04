@@ -27,6 +27,7 @@ Every `mountX(root, props)` returns `{ update(partial), dispose() }`.
 - `progress.ts`: `mountProgress`. `role="progressbar"`, value clamped to 0..100.
 - `menu.ts`: `mountMenu`. Button trigger plus `role="menu"` popup. Items may be `destructive`, `disabled`, or `{ separator: true }`.
 - `text.ts`: `mountText`. Plain text through `textContent`; `![alt](https://…)` becomes `img`, `[label](https://…)` becomes `a` that calls `onOpenUrl`. `splitTextMedia` is the pure splitter.
+- `popover-anchor.ts`: `mountPopoverAnchor` binds an element to a host-positioned sandboxed popover. It owns per-opening IDs, hover/focus activity, scroll/removal cleanup and anchor focus restoration. Unlike `popup.ts`, its content lives outside the source frame. Feature-gate it with `ready.features.popovers`, render the child from `ready.popover`, and dispose bindings before replacing rows. See [Anchored popovers](../../API.md#anchored-popovers) for limits and host ownership.
 - `style.ts`: the one CSS string. `dom.ts` `ensureStyle` injects it once. `popup.ts` places fixed popups (flips above when short on room) and wires outside-click, resize, and scroll to close. `option.ts` is the popup row shared by select and menu. `icons.ts` holds the four inline SVG shapes.
 
 ## Invariants

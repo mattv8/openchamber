@@ -136,6 +136,20 @@ export type {
 export { connectHost, HostRequestError } from './host.ts';
 export type { HostClient, HostClientOptions, HostFrame } from './host.ts';
 export {
+  GUEST_POPOVER_COORDINATE_MAX,
+  GUEST_POPOVER_DATA_DEPTH_MAX,
+  GUEST_POPOVER_DATA_MAX,
+  GUEST_POPOVER_HEIGHT_MAX,
+  GUEST_POPOVER_HEIGHT_MIN,
+  GUEST_POPOVER_ID,
+  GUEST_POPOVER_SIDES,
+  GUEST_POPOVER_WIDTH_MAX,
+  GUEST_POPOVER_WIDTH_MIN,
+  GUEST_POPOVER_CLOSE_REASONS,
+  isGuestPopoverRequest,
+} from './popover.ts';
+export type { GuestPopoverAnchor, GuestPopoverClosedEvent, GuestPopoverContext, GuestPopoverRequest, GuestPopoverSide } from './popover.ts';
+export {
   clampAttachRequest,
   clampBadgeCount,
   clampFrameHeight,
@@ -181,6 +195,9 @@ export type {
   GuestResizeMessage,
   GuestOpenCommitMessage,
   GuestStatusControlsMessage,
+  GuestPopoverAnchorMessage,
+  GuestPopoverCloseMessage,
+  GuestPopoverOpenMessage,
   OpenCommitRequest,
   ResizeRequest,
   GuestItem,
@@ -254,6 +271,7 @@ export type {
   HostDirectoryMessage,
   HostItemMessage,
   HostStatusControlEventMessage,
+  HostPopoverClosedMessage,
   HostMessage,
   HostReadyContext,
   HostReadyMessage,

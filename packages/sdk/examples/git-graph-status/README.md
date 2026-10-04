@@ -10,4 +10,6 @@ Display preferences use device storage only when `features.deviceStorage` is adv
 
 The graph uses the optional syntax keyword, string, number, function, and type colors when supplied by the host. It falls back to the existing semantic graph colors on older snapshots.
 
+When a host advertises popovers, hovering or focusing a commit row opens a separate, theme-aware detail frame. The frame fetches that commit once from the existing local service and shows its author, time, subject, refs, stats, hash, Open diff action, and GitHub action when the configured remote is on GitHub. Row clicks still expand the inline detail card, and hosts without popovers keep that behavior unchanged.
+
 Build `status/main.js` and `service/main.js` before installing the folder. The checked-in bundles are maintained by the SDK example rebuild process.

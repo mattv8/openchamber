@@ -3,6 +3,7 @@ import { GUEST_STORAGE_KEY_MAX, GUEST_STORAGE_VALUE_BYTES, type GuestProjectsSna
 import type { GuestStatusControl, GuestStatusControlEvent } from './status-controls.ts';
 import { isGuestStatusControls } from './status-controls.ts';
 import type { JsonValue } from './contract.ts';
+import { isGuestPopoverRequest, type GuestPopoverClosedEvent, type GuestPopoverRequest } from './popover.ts';
 import {
   GUEST_FILE_EDITOR_CONTENT_MAX,
   GUEST_FILE_EDITOR_VERSION_MAX,
@@ -120,8 +121,12 @@ export type HostClient = {
   onItem: (listener: (item: GuestItem | null) => void) => () => void;
   /** Receive activation of a host-rendered Work Status control. */
   onStatusControl: (listener: (event: GuestStatusControlEvent) => void) => () => void;
+  onPopoverClosed: (listener: (event: GuestPopoverClosedEvent) => void) => () => void;
   /** Replace this status frame's host-rendered controls. Pass [] to clear them. */
   setStatusControls: (controls: GuestStatusControl[]) => Promise<void>;
+  openPopover: (request: GuestPopoverRequest) => Promise<void>;
+  closePopover: (id: string, reason?: 'closed' | 'escape') => Promise<void>;
+  setPopoverAnchorActive: (id: string, active: boolean) => Promise<void>;
   /**
    * Answer the host when the user submits one of this package's
    * `contributes.commands`. Return the chip to attach, or `null` for nothing
@@ -282,6 +287,7 @@ export const connectHost = (options: HostClientOptions = {}): HostClient => {
   const settingsListeners = new Set<(settings: GuestSettings) => void>();
   const itemListeners = new Set<(item: GuestItem | null) => void>();
   const statusControlListeners = new Set<(event: GuestStatusControlEvent) => void>();
+  const popoverClosedListeners = new Set<(event: GuestPopoverClosedEvent) => void>();
   let resolveHandler: ((request: ResolveRequest) => Promise<AttachIssueRequest | null> | AttachIssueRequest | null) | null = null;
   let actionHandler: ((item: GuestActionItem) => void | Promise<void>) | null = null;
   const fileOpenListeners = new Set<(file: FileEditorDocument) => void>();
@@ -295,6 +301,9 @@ export const connectHost = (options: HostClientOptions = {}): HostClient => {
   const ids = { value: 0 };
   let lastReady: HostReadyContext | null = null;
   let lastLifecycle: SessionLifecycleEvent | null = null;
+  let popoverPointerActive = false;
+  let popoverFocusActive = false;
+  let popoverActivityReported: boolean | null = null;
 
   const lifecycleFromSession = (session: SessionSnapshot | null): SessionLifecycleEvent | null => {
     if (!session) return null;
@@ -399,6 +408,11 @@ export const connectHost = (options: HostClientOptions = {}): HostClient => {
 
     if (message.type === 'status-control-event') {
       emit(statusControlListeners, message.payload);
+      return;
+    }
+
+    if (message.type === 'popover-closed') {
+      emit(popoverClosedListeners, message.payload);
       return;
     }
 
@@ -549,6 +563,39 @@ export const connectHost = (options: HostClientOptions = {}): HostClient => {
     event.preventDefault();
     requestFileSave();
   };
+  const onPopoverEscape = (event: Event): void => {
+    if (!isKeyEvent(event) || event.key !== 'Escape' || lastReady?.surface !== 'popover' || !lastReady.popover) return;
+    event.preventDefault();
+    void closePopover(lastReady.popover.id, 'escape').catch(() => undefined);
+  };
+  const reportPopoverActivity = (): void => {
+    const popover = lastReady?.surface === 'popover' ? lastReady.popover : undefined;
+    if (!popover) return;
+    const active = popoverPointerActive || popoverFocusActive;
+    if (popoverActivityReported === active) return;
+    popoverActivityReported = active;
+    void setPopoverAnchorActive(popover.id, active).catch(() => undefined);
+  };
+  const onPopoverPointerOver = (): void => {
+    if (lastReady?.surface !== 'popover' || popoverPointerActive) return;
+    popoverPointerActive = true;
+    reportPopoverActivity();
+  };
+  const onPopoverPointerOut = (event: PointerEvent): void => {
+    if (lastReady?.surface !== 'popover' || event.relatedTarget !== null || !popoverPointerActive) return;
+    popoverPointerActive = false;
+    reportPopoverActivity();
+  };
+  const onPopoverFocus = (): void => {
+    if (lastReady?.surface !== 'popover' || popoverFocusActive) return;
+    popoverFocusActive = true;
+    reportPopoverActivity();
+  };
+  const onPopoverBlur = (): void => {
+    if (lastReady?.surface !== 'popover' || !popoverFocusActive) return;
+    popoverFocusActive = false;
+    reportPopoverActivity();
+  };
   const requireIdentity = (value: string, maximum = 1024): void => {
     if (!value.trim() || value.length > maximum) throw new HostRequestError('HOST_REJECTED', `Identity must contain 1 to ${maximum} characters.`);
   };
@@ -593,6 +640,22 @@ export const connectHost = (options: HostClientOptions = {}): HostClient => {
     if (!result || !('storage' in result) || result.op !== payload.op) throw new HostRequestError('HOST_REJECTED', 'Host did not return storage data.');
     return result;
   };
+  const closePopover = (id: string, reason?: 'closed' | 'escape'): Promise<void> => (
+    lastReady?.features?.popovers !== true && !(lastReady?.surface === 'popover' && lastReady.popover?.id === id)
+      ? Promise.reject(new HostRequestError('UNSUPPORTED', 'This host does not support popovers.'))
+      : request({ ...envelope, type: 'popover-close', id: nextId(ids), payload: reason ? { id, reason } : { id } })
+  );
+  const setPopoverAnchorActive = (id: string, active: boolean): Promise<void> => (
+    lastReady?.features?.popovers !== true && !(lastReady?.surface === 'popover' && lastReady.popover?.id === id)
+      ? Promise.reject(new HostRequestError('UNSUPPORTED', 'This host does not support popovers.'))
+      : request({ ...envelope, type: 'popover-anchor', id: nextId(ids), payload: { id, active } })
+  );
+  target.addEventListener('keydown', onPopoverEscape, true);
+  target.addEventListener('pointerover', onPopoverPointerOver);
+  target.addEventListener('pointermove', onPopoverPointerOver);
+  target.addEventListener('pointerout', onPopoverPointerOut);
+  target.addEventListener('focus', onPopoverFocus);
+  target.addEventListener('blur', onPopoverBlur);
 
   return {
     onAction: (handler) => {
@@ -705,6 +768,10 @@ export const connectHost = (options: HostClientOptions = {}): HostClient => {
         statusControlListeners.delete(listener);
       };
     },
+    onPopoverClosed: (listener) => {
+      popoverClosedListeners.add(listener);
+      return () => { popoverClosedListeners.delete(listener); };
+    },
     setStatusControls: (controls) => {
       if (lastReady?.features?.statusControls !== true) {
         return Promise.reject(new HostRequestError('UNSUPPORTED', 'This host does not support status controls.'));
@@ -714,6 +781,17 @@ export const connectHost = (options: HostClientOptions = {}): HostClient => {
       }
       return request({ ...envelope, type: 'status-controls', id: nextId(ids), payload: { controls } });
     },
+    openPopover: (payload) => {
+      if (lastReady?.features?.popovers !== true) {
+        return Promise.reject(new HostRequestError('UNSUPPORTED', 'This host does not support popovers.'));
+      }
+      if (!isGuestPopoverRequest(payload)) {
+        return Promise.reject(new HostRequestError('HOST_REJECTED', 'Popover requests need bounded geometry and JSON data.'));
+      }
+      return request({ ...envelope, type: 'popover-open', id: nextId(ids), payload });
+    },
+    closePopover,
+    setPopoverAnchorActive,
     onResolve: (handler) => {
       resolveHandler = handler;
       return () => {
@@ -1013,6 +1091,12 @@ export const connectHost = (options: HostClientOptions = {}): HostClient => {
       fileSavedListeners.clear();
       if (saveShortcutInstalled) target.removeEventListener('keydown', onSaveShortcut, true);
       target.removeEventListener('message', onMessage);
+      target.removeEventListener('keydown', onPopoverEscape, true);
+      target.removeEventListener('pointerover', onPopoverPointerOver);
+      target.removeEventListener('pointermove', onPopoverPointerOver);
+      target.removeEventListener('pointerout', onPopoverPointerOut);
+      target.removeEventListener('focus', onPopoverFocus);
+      target.removeEventListener('blur', onPopoverBlur);
       for (const waiter of pending.values()) {
         clearTimeout(waiter.timer);
         waiter.reject(new HostRequestError('HOST_UNAVAILABLE', 'Host client was disposed.'));
@@ -1025,6 +1109,8 @@ export const connectHost = (options: HostClientOptions = {}): HostClient => {
       connectionListeners.clear();
       settingsListeners.clear();
       itemListeners.clear();
+      statusControlListeners.clear();
+      popoverClosedListeners.clear();
     },
   };
 };

@@ -1,11 +1,30 @@
 import { connectHost, HostRequestError, type SessionLifecyclePhase } from '@openchamber/sdk';
-import { applyHostReady, mountButton, mountCheckbox, mountTabs } from '@openchamber/sdk/ui';
+import { applyHostReady, mountButton, mountCheckbox, mountPopoverAnchor, mountTabs } from '@openchamber/sdk/ui';
 import { z } from 'zod';
 
 import { layoutGraph } from './graph.ts';
 import { STYLE, drawRail, drawRowGraph, element, graphWidth, refBadge, type RefKind } from './view.ts';
+import { startCommitPopover } from './commit-popover.ts';
 
 const host = connectHost();
+const root = document.querySelector<HTMLElement>('#root');
+if (!root) throw new Error('Missing root');
+const style = document.createElement('style');
+style.textContent = STYLE;
+document.head.append(style);
+let started = false;
+host.onReady((context) => {
+  applyHostReady(context, document.documentElement);
+  if (started) return;
+  started = true;
+  if (context.surface === 'popover') {
+    startCommitPopover(root, host, context);
+    return;
+  }
+  startStatus();
+});
+
+const startStatus = (): void => {
 host.onStatusControl((event) => {
   if (event.id === 'header-refresh') {
     void load();
@@ -13,12 +32,6 @@ host.onStatusControl((event) => {
   }
   if (event.id === 'header-mode' && event.value) setMode(event.value);
 });
-const root = document.querySelector<HTMLElement>('#root');
-if (!root) throw new Error('Missing root');
-const style = document.createElement('style');
-style.textContent = STYLE;
-document.head.append(style);
-
 // ----- Service answers, parsed at the boundary -----
 
 const refKindSchema = z.enum(['local', 'remote', 'tag']);
@@ -89,9 +102,11 @@ let preferencesError: string | null = null;
 let deviceStorageSupported = false;
 let statusControlsSupported = false;
 let statusControlsActive = false;
+let popoversSupported = false;
 let publishedControls: string | null = null;
 let publishingControls: string | null = null;
 const details = new Map<string, DetailState>();
+const popoverAnchors = new Set<{ dispose: () => void }>();
 let generation = 0;
 
 const refKey = (ref: { name: string; kind: RefKind }) => `${ref.kind}:${ref.name}`;
@@ -329,6 +344,8 @@ const renderDetail = (card: HTMLElement, commit: Commit) => {
 };
 
 const render = () => {
+  for (const anchor of popoverAnchors) anchor.dispose();
+  popoverAnchors.clear();
   bar.hidden = statusControlsActive;
   preferencesNotice.hidden = preferencesError === null;
   preferencesNotice.textContent = preferencesError ?? '';
@@ -379,6 +396,20 @@ const render = () => {
       render();
       if (openHash) void loadDetail(openHash);
     });
+    if (popoversSupported) {
+      popoverAnchors.add(mountPopoverAnchor(head, {
+        host,
+        getData: () => ({
+          sha: commit.hash,
+          refs: commit.refs.slice(0, 20).map((ref) => ({ name: ref.name, kind: ref.kind, head: ref.head })),
+          github: refs?.github ?? null,
+        }),
+        width: 340,
+        height: 220,
+        side: 'left',
+        label: `Commit preview: ${commit.subject}`,
+      }));
+    }
     row.append(head);
     if (open) {
       const detailsRow = element('div', 'details');
@@ -410,6 +441,7 @@ host.onReady((context) => {
   locale = context.locale;
   const nextDeviceStorage = context.features?.deviceStorage === true;
   const nextStatusControls = context.features?.statusControls === true;
+  const nextPopovers = context.features?.popovers === true;
   if (deviceStorageSupported !== nextDeviceStorage) {
     deviceStorageSupported = nextDeviceStorage;
     if (directory) void loadPrefs(directory, deviceStorageSupported);
@@ -419,6 +451,10 @@ host.onReady((context) => {
     statusControlsActive = false;
     publishedControls = null;
     publishingControls = null;
+    render();
+  }
+  if (popoversSupported !== nextPopovers) {
+    popoversSupported = nextPopovers;
     render();
   }
   publishStatusControls();
@@ -452,3 +488,4 @@ host.onSessionLifecycle((event) => {
 });
 
 render();
+};

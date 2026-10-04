@@ -61,6 +61,23 @@ export const STYLE = `
   .card code { font-family: var(--oc-mono); color: var(--oc-elevated-fg); }
   .card .actions { display: flex; gap: 6px; flex-wrap: wrap; padding-top: 2px; }
   .card .error { color: var(--oc-error-text); }
+   .popover-card { display: flex; flex-direction: column; gap: 6px; box-sizing: border-box; min-height: 0; padding: 10px;
+     color: var(--oc-elevated-fg); }
+   .popover-author { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+   .popover-initials { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 20px; height: 20px;
+     border-radius: 4px; background: var(--oc-selection); color: var(--oc-selection-fg); font-size: 10px; font-weight: 600; }
+   .popover-author-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+   .popover-meta, .popover-body, .popover-stats, .popover-feedback { color: var(--oc-muted); font-size: 11px; }
+   .popover-subject { font-weight: 600; white-space: pre-wrap; overflow-wrap: anywhere; }
+   .popover-body { max-height: 72px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+   .popover-refs, .popover-stats, .popover-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+   .popover-refs .ref { max-width: 100%; }
+   .popover-stats .add { color: var(--oc-success-text); }
+   .popover-stats .del { color: var(--oc-error-text); }
+   .popover-actions { padding-top: 2px; }
+   .popover-actions code { margin-right: auto; font-family: var(--oc-mono); }
+   .popover-feedback { min-height: 14px; color: var(--oc-error-text); }
+   .popover-feedback:empty { display: none; }
 `;
 
 const laneX = (lane: number): number => LANE / 2 + lane * LANE;

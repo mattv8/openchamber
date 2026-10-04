@@ -224,6 +224,12 @@ host.onItem((item) => {
 
 Every method, its limits, and the error codes are on the [Host API](https://openchamber.dev/docs/sdk/host/) page.
 
+## Popovers outside the extension frame
+
+When `ready.features.popovers` is true, `host.openPopover` can show a bounded card outside your iframe. The host loads the same package entry in a second sandboxed frame, with `ready.surface === 'popover'` and `ready.popover.data` carrying your JSON. Branch on that surface before mounting your normal page. The popover has the same approved capabilities as your extension.
+
+Use `mountPopoverAnchor` from `@openchamber/sdk/ui` to attach the preview to a DOM element. It handles hover, keyboard access, anchor removal and scrolling; dispose the binding when replacing the element. Keep your existing click action as a fallback for older hosts. The Git Graph example shows this with commit metadata, statistics and copy/link actions. See [Anchored popovers](./API.md#anchored-popovers) for the request, limits and lifecycle.
+
 ## UI kit
 
 `@openchamber/sdk/ui` has buttons, fields, a searchable dropdown, checkboxes, tabs, badges, lists, empty states, spinners, banners, separators, progress bars, menus, and safe text, all drawn with the app's colours and fonts. Apply `applyHostReady` on every `onReady`, but mount controls and register listeners once. Repeated snapshots must not erase inputs or drafts. Every mount returns `{ update, dispose }`. Use `update` to pass changed values back to controls, including `tabs.update({ activeId })` and `select.update({ value })` inside `onChange`. See the [UI kit examples](https://docs.openchamber.dev/sdk/ui/) for input state and tab switching.

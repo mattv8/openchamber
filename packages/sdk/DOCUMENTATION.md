@@ -98,6 +98,16 @@ Add a type when the host grows that hole, not before. Any new `connectHost` meth
 
 Rebuild every example bundle after an SDK change (`bunx openchamber-guest-bundle` per entry, see `examples/README.md`); the built files are checked in.
 
+## Anchored popovers
+
+`popover.ts` owns bounded rectangles, JSON context, requests and close events; `popover-schemas.ts` validates the host boundary. `connectHost` exposes `openPopover`, `closePopover`, `setPopoverAnchorActive` and `onPopoverClosed`, gated by `ready.features.popovers`. `src/ui/popover-anchor.ts` owns DOM-anchor hover/focus events and active-only observers. Public limits and behavior live in `API.md#anchored-popovers`.
+
+The UI host owns geometry and lifecycle in `lib/guests/popovers.ts` and `components/layout/GuestPopover.tsx`; `PluginPane` remains the message and authorization boundary. An overlay reuses its owner's approved package entry and existing direct/relay loader. It receives `surface: 'popover'`, bounded `ready.popover` data and the owner's directory. Its grants are the extension's existing grants. It cannot choose a different entry or open nested popovers. The host verifies child authority against the active owner before handling messages, including the interval before React removes a retired frame.
+
+Project changes dismiss the overlay without resetting the owner's workspace subscriptions or unrelated pending replies. Frame, runtime, origin, grant and installation changes retire it. One fresh child exists per opening; there is no hidden warm frame. Owner-only close events identify the opening so delayed activity cannot close its replacement. The host focuses the source frame for keyboard dismissal, and the guest helper restores the actual anchor, which the host cannot access across the sandbox.
+
+Child pointer/focus activity travels through the existing popover activity message, restricted to that child's own opening. Parent iframe `:hover` and pointer events are not reliable for opaque-origin content. The host verifies geometry but cannot prove a guest's hover intent; focus transfer requires existing owner focus. Host modal dialogs suppress previews. `setHeight` resizes the child within its bounds without changing the activation or interrupting pending replies. Dialog-owned previews remain unsupported to preserve their modal focus boundary.
+
 ## Guest toasts
 
 `ToastRequest` adds optional `copy: boolean | { text: string }`, `dismiss: boolean`, and `persistent: boolean`. The client checks message/copy length before sending; the host schema validates the complete payload. `HostBridgeEffects.toast` receives the request intact. `lib/guests/toast.tsx` owns toast creation and per-toast dismissal; `components/layout/GuestToastActions.tsx` renders the buttons and clipboard success/failure state. Copy keeps the toast open. Persistent toasts always include OK, including when the guest passes `dismiss: false`.

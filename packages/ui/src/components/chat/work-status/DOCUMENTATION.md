@@ -323,6 +323,15 @@ in-flight requests survive that project change. One or two controls use the head
 slot; three or four use a two-column row below the title. Folding removes the
 controls with the frame rather than retaining a hidden controller.
 
+An expanded extension can also open a sandboxed anchored popover outside its
+body iframe. The host positions the card and loads the same approved entry
+with `surface: 'popover'`. Folding or hiding the section removes the card with
+its owner; project/runtime and authorization changes also dismiss it. Pointer
+travel into the card and keyboard dismissal are handled by the SDK anchor
+helper and the host overlay controller. This does not increase the status
+frame's 320px height limit. The public contract is in `packages/sdk/API.md`,
+under Anchored popovers.
+
 `useWorkStatusExtensionSections` lists active guests with a `statusEntry` from
 the catalog store (`useGuestStatusSections`). It is empty on VS Code and
 mobile, which load no guests; the panel is hidden there anyway, but the empty
