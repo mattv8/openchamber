@@ -805,7 +805,9 @@ export async function resolveGitHubPrStatus({ octokit, directory, branch, remote
       // History is only asked for the branch's own name and its primary remote
       // network. That includes a fork's parent/source, where a fork-owned PR
       // may have been merged, while excluding unrelated contributor remotes.
-      const isPrimaryAssociation = sourceCandidates.includes(target) && candidateBranch === branchCandidates[0] && candidateBranch !== defaultBranch;
+      // A contributor fork checkout's PR merges into the primary remote, which
+      // is not among its source candidates.
+      const isPrimaryAssociation = (target === resolvedTargets[0] || sourceCandidates.includes(target)) && candidateBranch === branchCandidates[0] && candidateBranch !== defaultBranch;
 
       const { open, historical } = await findBranchPrCandidates({
         octokit,

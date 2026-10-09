@@ -356,6 +356,26 @@ describe('resolveGitHubPrStatus for a contributor fork checkout', () => {
     expect(status.repo).toMatchObject({ owner: 'acme', repo: 'app' });
   });
 
+  test('finds the merged fork PR in the primary remote once it is merged', async () => {
+    git(directory, '-c', 'user.name=Test User', '-c', 'user.email=test@example.com', 'commit', '-q', '--allow-empty', '-m', 'fix');
+    const mergedForkPr = {
+      ...forkPr,
+      state: 'closed',
+      merged_at: '2026-01-01T00:00:00Z',
+      head: { ...forkPr.head, sha: git(directory, 'rev-parse', 'HEAD').trim() },
+    };
+    const client = octokit();
+    client.rest.pulls.list = async ({ owner, state, head }) => ({
+      data: owner === 'acme' && state === 'all' && head === 'contrib:fix/thing' ? [mergedForkPr] : [],
+    });
+
+    const status = await resolveGitHubPrStatus({
+      octokit: client, directory, branch: 'fix/thing', remoteName: 'origin', sourceRemoteName: 'pr-contrib', force: true,
+    });
+    expect(status.pr?.number).toBe(44);
+    expect(status.repo).toMatchObject({ owner: 'acme', repo: 'app' });
+  });
+
   test('without a source remote a same-named fork branch is not this branch', async () => {
     const status = await resolveGitHubPrStatus({
       octokit: octokit(), directory, branch: 'fix/thing', remoteName: 'origin', force: true,
