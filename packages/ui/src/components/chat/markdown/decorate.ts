@@ -1,11 +1,12 @@
 import { copyTextToClipboard } from '@/lib/clipboard';
+import { SKILL_CHIP_ICON_HREF } from '@/lib/messages/inlineMessageLinks';
 import { getExternalFaviconUrl, isExternalHttpUrl, isLoopbackHttpUrl } from '@/lib/url';
 import { dropdownMenuItemClass, dropdownMenuPopupClass } from '@/components/ui/dropdown-menu.styles';
 import type { IconName } from '@/components/icon/icons';
 import { MESSAGE_IMAGE_EXPORT_EXCLUDE_ATTRIBUTE } from '../message/imageExport';
 import { getMermaidViewerController } from './mermaidViewer';
 import { getMarkdownCodeText } from './codeText';
-import { getMarkdownSelectionText } from './selectionMarkdown';
+import { getMarkdownSelectionText, type RenderedCopyFormat } from './selectionMarkdown';
 
 // ---------------------------------------------------------------------------
 // Shared decoration context
@@ -18,6 +19,8 @@ export type DecorateLabels = {
   copied: string;
   enableCodeWrap: string;
   disableCodeWrap: string;
+  enableTableWrap: string;
+  disableTableWrap: string;
   copyTable: string;
   downloadTable: string;
   copyDiagram: string;
@@ -41,9 +44,15 @@ export type DecorateContext = {
   codeBlockLineWrap: boolean;
   deferCodeLineNumberSync?: boolean;
   onToggleCodeBlockLineWrap?: () => void;
+  // Tables fit the available width and wrap cell text instead of scrolling.
+  tableCellWrap: boolean;
+  onToggleTableCellWrap?: () => void;
   // Renders a mermaid block source to svg/ascii using current theme colors.
   renderMermaid: (source: string) => MermaidRender;
   onPreviewLoopback?: (url: string) => void;
+  // Read at copy time: whether a prose selection copies as Markdown or as the
+  // text the reader sees. Markdown when absent.
+  getCopyFormat?: () => RenderedCopyFormat;
 };
 
 const ICONS = {
@@ -85,6 +94,29 @@ const decorateImageLabels = (root: HTMLElement): void => {
   }
 };
 
+const prependChipIcon = (chip: HTMLElement, href: string): void => {
+  if (chip.querySelector('svg')) return;
+  const svg = chip.ownerDocument.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('class', 'block size-[1.1em] shrink-0');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  const use = chip.ownerDocument.createElementNS('http://www.w3.org/2000/svg', 'use');
+  use.setAttribute('href', href);
+  svg.appendChild(use);
+  chip.prepend(svg);
+};
+
+/** Reference chips in user messages: file-type icons on attachment citations, a book on skills. */
+const decorateReferenceChipIcons = (root: HTMLElement): void => {
+  for (const chip of Array.from(root.querySelectorAll<HTMLElement>('[data-attachment-citation]'))) {
+    const iconId = chip.getAttribute('data-attachment-citation') ?? '';
+    if (iconId) prependChipIcon(chip, `#${iconId}`);
+  }
+  for (const chip of Array.from(root.querySelectorAll<HTMLElement>('a[data-skill-name]'))) {
+    prependChipIcon(chip, SKILL_CHIP_ICON_HREF);
+  }
+};
+
 const decorateDisclosures = (root: HTMLElement): void => {
   for (const summary of root.querySelectorAll<HTMLElement>('details[data-md-details] > summary')) {
     if (summary.querySelector('[data-md-disclosure-icon]')) continue;
@@ -107,6 +139,17 @@ const makeIconButton = (icon: keyof typeof ICONS, title: string, slot: string): 
   button.setAttribute('aria-label', title);
   setIcon(button, icon);
   return button;
+};
+
+const applyWrapButtonState = (button: HTMLButtonElement, enabled: boolean, enableTitle: string, disableTitle: string): void => {
+  const title = enabled ? disableTitle : enableTitle;
+  button.setAttribute('title', title);
+  button.setAttribute('aria-label', title);
+  button.classList.toggle('text-foreground', enabled);
+  button.classList.toggle('opacity-100', enabled);
+  button.classList.toggle('text-muted-foreground', !enabled);
+  button.classList.toggle('opacity-65', !enabled);
+  button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
 };
 
 const applyCodeBlockWrapState = (wrapper: HTMLElement, enabled: boolean, labels: DecorateLabels): void => {
@@ -134,16 +177,7 @@ const applyCodeBlockWrapState = (wrapper: HTMLElement, enabled: boolean, labels:
     lineContent.style.whiteSpace = enabled ? 'pre-wrap' : 'pre';
     lineContent.style.overflowWrap = enabled ? 'anywhere' : 'normal';
   }
-  if (wrapButton) {
-    const title = enabled ? labels.disableCodeWrap : labels.enableCodeWrap;
-    wrapButton.setAttribute('title', title);
-    wrapButton.setAttribute('aria-label', title);
-    wrapButton.classList.toggle('text-foreground', enabled);
-    wrapButton.classList.toggle('opacity-100', enabled);
-    wrapButton.classList.toggle('text-muted-foreground', !enabled);
-    wrapButton.classList.toggle('opacity-65', !enabled);
-    wrapButton.setAttribute('aria-pressed', enabled ? 'true' : 'false');
-  }
+  if (wrapButton) applyWrapButtonState(wrapButton, enabled, labels.enableCodeWrap, labels.disableCodeWrap);
 };
 
 const layoutCodeLines = (pre: HTMLPreElement): void => {
@@ -386,8 +420,27 @@ const buildTableMenu = (action: string, items: Array<{ key: string; label: strin
 const TABLE_COLUMN_MIN_WIDTH = 120;
 const TABLE_COLUMN_FALLBACK_MAX_WIDTH = 320;
 const TABLE_LAYOUT_ATTR = 'data-md-table-layout';
+// The wrap mode and available width the fixed column widths were computed for.
+const TABLE_WRAP_ATTR = 'data-md-table-wrap';
+const TABLE_WIDTH_ATTR = 'data-md-table-width';
 
-const decorateTables = (root: HTMLElement, labels: DecorateLabels): void => {
+const applyTableWrapState = (wrapper: Element, enabled: boolean, labels: DecorateLabels): void => {
+  const button = wrapper.querySelector<HTMLButtonElement>('[data-md-action="toggle-table-wrap"]');
+  if (button) applyWrapButtonState(button, enabled, labels.enableTableWrap, labels.disableTableWrap);
+  // Until widths are measured, a wrapping table shrinks to the available
+  // width like any auto-width table; otherwise it keeps its natural width.
+  wrapper.querySelector('table')?.classList.toggle('w-max', !enabled);
+};
+
+/** Sync table wrap buttons with the current mode; column widths follow in stabilizeMarkdownTableWidths. */
+export const applyMarkdownTableWrapState = (root: HTMLElement, enabled: boolean, labels: DecorateLabels): void => {
+  for (const wrapper of Array.from(root.querySelectorAll('[data-markdown="table-wrapper"]'))) {
+    applyTableWrapState(wrapper, enabled, labels);
+  }
+};
+
+const decorateTables = (root: HTMLElement, ctx: DecorateContext): void => {
+  const { labels } = ctx;
   const tables = root.querySelectorAll<HTMLTableElement>('table');
   for (const table of Array.from(tables)) {
     const existing = table.closest('[data-markdown="table-wrapper"]');
@@ -399,6 +452,8 @@ const decorateTables = (root: HTMLElement, labels: DecorateLabels): void => {
 
     const toolbar = document.createElement('div');
     toolbar.className = 'flex items-center justify-end gap-1';
+
+    toolbar.appendChild(makeIconButton('textWrap', labels.enableTableWrap, 'toggle-table-wrap'));
 
     const copyGroup = document.createElement('div');
     copyGroup.className = 'relative';
@@ -428,7 +483,7 @@ const decorateTables = (root: HTMLElement, labels: DecorateLabels): void => {
     parent.replaceChild(wrapper, table);
     table.setAttribute('data-markdown', 'table');
     table.setAttribute(TABLE_LAYOUT_ATTR, 'pending');
-    table.classList.add('w-max', 'border-collapse', 'text-sm');
+    table.classList.add('border-collapse', 'text-sm');
 
     for (const tr of Array.from(table.querySelectorAll('tr'))) {
       tr.classList.add('border-b', 'border-border/60');
@@ -446,14 +501,54 @@ const decorateTables = (root: HTMLElement, labels: DecorateLabels): void => {
     scroll.appendChild(table);
     wrapper.appendChild(toolbar);
     wrapper.appendChild(scroll);
+    applyTableWrapState(wrapper, ctx.tableCellWrap, labels);
   }
 };
 
-export const stabilizeMarkdownTableWidths = (root: HTMLElement): void => {
-  const tables = Array.from(root.querySelectorAll<HTMLTableElement>(
-    `table[data-markdown="table"]:not([${TABLE_LAYOUT_ATTR}="fixed"])`,
-  ));
-  if (tables.length === 0 || !root.isConnected) return;
+// Columns that fit their share keep their natural width; the rest split what
+// remains, so short columns stay on one line and long ones wrap.
+const fitColumnWidths = (naturalWidths: number[], availableWidth: number): number[] => {
+  const widths = [...naturalWidths];
+  let open = naturalWidths.map((_, index) => index);
+  let remaining = availableWidth;
+  while (open.length > 0) {
+    const share = remaining / open.length;
+    const fitting = open.filter((index) => naturalWidths[index] <= share);
+    if (fitting.length === 0) {
+      for (const index of open) widths[index] = Math.max(TABLE_COLUMN_MIN_WIDTH, Math.floor(share));
+      break;
+    }
+    for (const index of fitting) remaining -= naturalWidths[index];
+    open = open.filter((index) => naturalWidths[index] > share);
+  }
+  return widths;
+};
+
+// The table wrapper hugs its table, so a fixed-width table would report its own
+// width back. Stretching the wrappers for one read gives the width the table
+// may use, which grows and shrinks with the chat.
+const measureAvailableWidths = (tables: HTMLTableElement[]): number[] => {
+  const wrappers = tables.map((table) => table.closest<HTMLElement>('[data-markdown="table-wrapper"]'));
+  for (const wrapper of wrappers) wrapper?.style.setProperty('width', '100%');
+  const widths = tables.map((table) => table.parentElement?.clientWidth ?? 0);
+  for (const wrapper of wrappers) wrapper?.style.removeProperty('width');
+  return widths;
+};
+
+export const stabilizeMarkdownTableWidths = (root: HTMLElement, wrapCells: boolean): void => {
+  const wrapMode = String(wrapCells);
+  const allTables = Array.from(root.querySelectorAll<HTMLTableElement>('table[data-markdown="table"]'));
+  if (allTables.length === 0 || !root.isConnected) return;
+  const allAvailableWidths = measureAvailableWidths(allTables);
+  const stale = allTables
+    .map((table, index) => ({ table, availableWidth: allAvailableWidths[index] ?? 0 }))
+    .filter(({ table, availableWidth }) => (
+      table.getAttribute(TABLE_LAYOUT_ATTR) !== 'fixed'
+      || table.getAttribute(TABLE_WRAP_ATTR) !== wrapMode
+      || table.getAttribute(TABLE_WIDTH_ATTR) !== String(availableWidth)
+    ));
+  if (stale.length === 0) return;
+  const tables = stale.map(({ table }) => table);
 
   const measurementRoot = root.ownerDocument.createElement('div');
   measurementRoot.setAttribute('aria-hidden', 'true');
@@ -512,20 +607,24 @@ export const stabilizeMarkdownTableWidths = (root: HTMLElement): void => {
   });
 
   root.appendChild(measurementRoot);
-  const plans = probes.map(({ table, columnProbes }) => {
-    const availableWidth = table.parentElement?.clientWidth ?? 0;
+  const plans = probes.map(({ table, columnProbes }, index) => {
+    const availableWidth = stale[index]?.availableWidth ?? 0;
     // Without layout (for example, a hidden chat), retain the former limit.
     const maxColumnWidth = Math.max(TABLE_COLUMN_MIN_WIDTH, availableWidth || TABLE_COLUMN_FALLBACK_MAX_WIDTH);
     const naturalWidths = columnProbes.map((probe) => Math.ceil(probe.getBoundingClientRect().width));
+    const cappedWidths = naturalWidths.map((width) => Math.min(maxColumnWidth, Math.max(TABLE_COLUMN_MIN_WIDTH, width)));
+    // Without layout there is no width to fit into, so wrapping waits.
+    const widths = wrapCells && availableWidth > 0 ? fitColumnWidths(cappedWidths, availableWidth) : cappedWidths;
     return {
       table,
-      widths: naturalWidths.map((width) => Math.min(maxColumnWidth, Math.max(TABLE_COLUMN_MIN_WIDTH, width))),
-      cappedColumns: naturalWidths.map((width) => width > maxColumnWidth),
+      availableWidth,
+      widths,
+      cappedColumns: naturalWidths.map((width, columnIndex) => width > (widths[columnIndex] ?? 0)),
     };
   });
   measurementRoot.remove();
 
-  for (const { table, widths, cappedColumns } of plans) {
+  for (const { table, availableWidth, widths, cappedColumns } of plans) {
     // Identifiers stay on one line only while the column can hold them; in a
     // column capped at the available width they wrap instead of overflowing
     // into the neighbouring cell.
@@ -558,6 +657,8 @@ export const stabilizeMarkdownTableWidths = (root: HTMLElement): void => {
     table.style.tableLayout = 'fixed';
     table.style.width = `${widths.reduce((total, width) => total + width, 0)}px`;
     table.setAttribute(TABLE_LAYOUT_ATTR, 'fixed');
+    table.setAttribute(TABLE_WRAP_ATTR, wrapMode);
+    table.setAttribute(TABLE_WIDTH_ATTR, String(availableWidth));
   }
 };
 
@@ -576,14 +677,16 @@ const decorateMermaid = (root: HTMLElement, ctx: DecorateContext): void => {
     const block = document.createElement('div');
     block.setAttribute('data-markdown', 'mermaid-block');
     block.setAttribute('data-md-source', source);
-    block.className = 'group relative';
+    block.className = 'relative';
 
     const scroll = document.createElement('div');
     scroll.setAttribute('data-markdown', 'mermaid-scroll');
 
     const toolbar = document.createElement('div');
     toolbar.setAttribute('data-markdown', 'mermaid-toolbar');
-    toolbar.className = 'absolute top-1 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity';
+    // Visible on touch screens, so a shared image must drop it explicitly.
+    toolbar.setAttribute(MESSAGE_IMAGE_EXPORT_EXCLUDE_ATTRIBUTE, 'true');
+    toolbar.className = 'absolute top-1 right-2 flex items-center gap-1';
 
     if (rendered.svg) {
       block.setAttribute('data-mermaid-render', 'svg');
@@ -689,10 +792,11 @@ export const decorateMarkdown = (root: HTMLElement, ctx: DecorateContext): void 
   }
   decorateDisclosures(root);
   decorateImageLabels(root);
+  decorateReferenceChipIcons(root);
   decorateInlineCode(root);
   decorateMermaid(root, ctx);
   decorateCodeBlocks(root, ctx);
-  decorateTables(root, ctx.labels);
+  decorateTables(root, ctx);
   decorateLinks(root, ctx);
 };
 
@@ -733,6 +837,7 @@ const getMarkdownCodeSelectionText = (range: Range): string | null => {
 
 type MarkdownCopyState = {
   registrations: number;
+  getCopyFormat?: () => RenderedCopyFormat;
   handler: (event: ClipboardEvent) => void;
   menuHandler: (event: Event) => void;
 };
@@ -740,9 +845,10 @@ type MarkdownCopyState = {
 const markdownCopyStates = new WeakMap<Document, MarkdownCopyState>();
 
 // Copying a selection inside rendered markdown writes its source form: code
-// as the exact code text, anything else as Markdown. The markdown path keeps
-// the selected HTML too, so rich editors still paste formatted text.
-const registerMarkdownCodeCopy = (doc: Document): (() => void) => {
+// as the exact code text, anything else as Markdown, or as plain text when the
+// user chose that. The prose path keeps the selected HTML too, so rich editors
+// still paste formatted text.
+const registerMarkdownCodeCopy = (doc: Document, getCopyFormat: (() => RenderedCopyFormat) | undefined): (() => void) => {
   let state = markdownCopyStates.get(doc);
   if (!state) {
     const getSelectedCopy = (): { text: string; html: string | null } | null => {
@@ -751,11 +857,11 @@ const registerMarkdownCodeCopy = (doc: Document): (() => void) => {
       const range = selection.getRangeAt(0);
       const code = getMarkdownCodeSelectionText(range);
       if (code !== null) return { text: code, html: null };
-      const markdown = getMarkdownSelectionText(range);
-      if (markdown === null) return null;
+      const text = getMarkdownSelectionText(range, state?.getCopyFormat?.() ?? 'markdown');
+      if (text === null) return null;
       const holder = doc.createElement('div');
       holder.appendChild(range.cloneContents());
-      return { text: markdown, html: holder.innerHTML };
+      return { text, html: holder.innerHTML };
     };
     const handler = (event: ClipboardEvent) => {
       if (!event.clipboardData) return;
@@ -778,6 +884,7 @@ const registerMarkdownCodeCopy = (doc: Document): (() => void) => {
     doc.defaultView?.addEventListener('openchamber:copy', menuHandler);
   }
   state.registrations += 1;
+  if (getCopyFormat) state.getCopyFormat = getCopyFormat;
 
   return () => {
     const current = markdownCopyStates.get(doc);
@@ -799,7 +906,7 @@ export const attachMarkdownInteractions = (
   container: HTMLElement,
   ctx: DecorateContext,
 ): (() => void) => {
-  const unregisterCodeCopy = registerMarkdownCodeCopy(container.ownerDocument);
+  const unregisterCodeCopy = registerMarkdownCodeCopy(container.ownerDocument, ctx.getCopyFormat);
   const handleClick = (event: MouseEvent) => {
     const target = event.target;
     if (!(target instanceof Element)) return;
@@ -827,6 +934,13 @@ export const attachMarkdownInteractions = (
     if (action === 'toggle-code-wrap') {
       event.preventDefault();
       ctx.onToggleCodeBlockLineWrap?.();
+      return;
+    }
+
+    if (action === 'toggle-table-wrap') {
+      event.preventDefault();
+      closeAllMenus(container);
+      ctx.onToggleTableCellWrap?.();
       return;
     }
 

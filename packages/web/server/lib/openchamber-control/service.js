@@ -1,3 +1,4 @@
+import { asNonEmptyString } from '../shared/guards.js';
 import path from 'node:path';
 import { OpenCode } from '@opencode/client';
 import { OpenChamberControlError, asControlError } from './error.js';
@@ -10,16 +11,11 @@ const WAIT_POLL_INTERVAL_MS = 500;
 // One service, both capabilities: which tool asked is the caller's concern.
 const CONTROL_ACTIONS = new Set(OPENCHAMBER_ALL_ACTIONS);
 const SCHEDULE_TASK_ID_ACTIONS = new Set([
+  'schedule.update',
   'schedule.run',
   'schedule.delete',
   'schedule.toggle',
 ]);
-
-const asNonEmptyString = (value) => {
-  if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-};
 
 const positiveInteger = (value, fallback, field) => {
   if (value === undefined || value === null) return fallback;
@@ -120,7 +116,8 @@ const buildScheduledTask = (input) => {
   const prompt = asNonEmptyString(input.prompt);
   if (!name) throw new OpenChamberControlError('name is required', 400);
   if (!prompt) throw new OpenChamberControlError('prompt is required', 400);
-  const model = parseModel(input.model);
+  const targetSessionId = asNonEmptyString(input.targetSessionId);
+  const model = targetSessionId && input.model === undefined ? { useDefaults: !asNonEmptyString(input.agent) } : parseModel(input.model);
   const goalTokenBudget = input.goalTokenBudget;
   if (goalTokenBudget !== undefined && input.goal !== true) {
     throw new OpenChamberControlError('goalTokenBudget requires goal', 400);
@@ -128,7 +125,7 @@ const buildScheduledTask = (input) => {
   if (goalTokenBudget !== undefined && (!Number.isSafeInteger(goalTokenBudget) || goalTokenBudget < 1000 || goalTokenBudget > 100_000_000)) {
     throw new OpenChamberControlError('goalTokenBudget must be from 1000 to 100000000', 400);
   }
-  return {
+  const task = {
     name,
     enabled: input.disabled !== true,
     schedule: buildSchedule(input),
@@ -140,6 +137,70 @@ const buildScheduledTask = (input) => {
       ...(input.goal === true ? { goalEnabled: true } : {}),
       ...(goalTokenBudget !== undefined ? { goalTokenBudget } : {}),
     },
+  };
+  if (input.targetSessionId !== undefined) task.targetSessionId = targetSessionId ?? input.targetSessionId;
+  return task;
+};
+
+/**
+ * `schedule.update`: the stored task with only the fields the call names
+ * changed. The id and the run state stay, so history and references survive;
+ * the scheduler re-arms from the new schedule on save.
+ */
+const patchScheduledTask = (existing, input) => {
+  if (existing.loopFile) {
+    throw new OpenChamberControlError(`This task comes from ${existing.loopFile}; change that file instead`, 409);
+  }
+  const execution = { ...existing.execution };
+  if (input.prompt !== undefined) {
+    const prompt = asNonEmptyString(input.prompt);
+    if (!prompt) throw new OpenChamberControlError('prompt cannot be empty', 400);
+    execution.prompt = prompt;
+  }
+  if (input.model !== undefined) {
+    Object.assign(execution, parseModel(input.model));
+    // A thinking level belongs to the model it was chosen for.
+    delete execution.variant;
+    delete execution.useDefaults;
+  }
+  for (const field of ['variant', 'agent']) {
+    if (input[field] === undefined) continue;
+    const value = asNonEmptyString(input[field]);
+    if (value) execution[field] = value;
+    else delete execution[field];
+    if (field === 'agent' && value && (input.targetSessionId || existing.targetSessionId)) delete execution.useDefaults;
+  }
+  if (typeof input.goal === 'boolean') {
+    if (input.goal) execution.goalEnabled = true;
+    else {
+      delete execution.goalEnabled;
+      delete execution.goalTokenBudget;
+    }
+  }
+  if (input.goalTokenBudget !== undefined) {
+    if (!execution.goalEnabled) throw new OpenChamberControlError('goalTokenBudget requires goal', 400);
+    if (!Number.isSafeInteger(input.goalTokenBudget) || input.goalTokenBudget < 1000 || input.goalTokenBudget > 100_000_000) {
+      throw new OpenChamberControlError('goalTokenBudget must be from 1000 to 100000000', 400);
+    }
+    execution.goalTokenBudget = input.goalTokenBudget;
+  }
+  let name = existing.name;
+  if (input.name !== undefined) {
+    name = asNonEmptyString(input.name);
+    if (!name) throw new OpenChamberControlError('name cannot be empty', 400);
+  }
+  const replacesSchedule = ['daily', 'weekly', 'once', 'cron'].some((key) => asNonEmptyString(input[key]));
+  const timezone = asNonEmptyString(input.timezone);
+  const schedule = replacesSchedule
+    ? buildSchedule(input)
+    : (timezone ? { ...existing.schedule, timezone } : existing.schedule);
+  return {
+    id: existing.id,
+    targetSessionId: input.targetSessionId === undefined ? existing.targetSessionId : input.targetSessionId,
+    name,
+    enabled: typeof input.disabled === 'boolean' ? !input.disabled : existing.enabled,
+    schedule,
+    execution,
   };
 };
 
@@ -157,6 +218,9 @@ export const createOpenChamberControlService = (dependencies) => {
     notifyUser = null,
     agentMemoryActions = null,
     sessionLinks = null,
+    // Delivers a dispatched session's result back to the session that asked
+    // (`returnResult`); absent means the server cannot offer it.
+    dispatchResults = null,
     // Archive lives in OpenChamber's own store now — v2 has no route that sets
     // Session.time.archived — so an unwired store simply means nothing is archived.
     archiveStore = null,
@@ -198,9 +262,10 @@ export const createOpenChamberControlService = (dependencies) => {
     });
   };
 
-  const archivedAt = (sessionID) => {
-    if (!archiveStore || typeof archiveStore.isArchived !== 'function') return null;
-    return archiveStore.isArchived(sessionID) || null;
+  // The store answers asynchronously; its archive timestamp, or null.
+  const archivedAt = async (sessionID) => {
+    if (!archiveStore) return null;
+    return (await archiveStore.archivedAt(sessionID)) ?? null;
   };
 
   const projects = async () => {
@@ -315,11 +380,59 @@ export const createOpenChamberControlService = (dependencies) => {
     }
   };
 
-  const executeSessionAction = async (action, input, contextDirectory, signal) => {
+  // Checked before anything is created or sent: a result nobody can deliver
+  // must fail the call, not leave a dispatched session the agent waits on.
+  const assertReturnResult = (action, input, parentSessionID) => {
+    if (input.wait === true) throw new OpenChamberControlError('returnResult cannot be combined with wait', 400);
+    if (!dispatchResults) throw new OpenChamberControlError('Returning a session result is not available on this server', 503);
+    if (!parentSessionID) throw new OpenChamberControlError('returnResult needs a calling session to deliver the result to', 400);
+    if (!asNonEmptyString(input.prompt)) throw new OpenChamberControlError('returnResult requires prompt', 400);
+    // A fork is a new session, so only a send can target the caller itself.
+    if (action === 'session.send' && asNonEmptyString(input.sessionId) === parentSessionID) {
+      throw new OpenChamberControlError('returnResult cannot deliver a session\'s result to itself', 400);
+    }
+  };
+
+  // What the agent is told when its result is on the way. It replaces a wait,
+  // so it has to stop the agent from building one out of polls or sleeps.
+  const RESULT_PENDING_NOTE = 'The session runs in the background. Its final answer will be delivered to you automatically as a message when it finishes, and you will continue from there. Do not poll, sleep, or call session.messages to wait for it; carry on with other work or end your turn.';
+
+  /**
+   * After the dispatch: the session is already running, so a failure here is
+   * reported in the result rather than thrown, and the agent is told plainly
+   * that no answer is coming instead of waiting for one.
+   */
+  const scheduleResultDelivery = async (result, parentSessionID, dispatchedAt) => {
+    // The newest end-of-run record before the prompt went out (null: none yet).
+    // Absent when the history could not be read; the runtime then compares times.
+    const afterIdleId = result.baselineIdleRecordId;
+    if (result.promptDispatched !== true) {
+      return { status: 'not-scheduled', reason: 'The prompt was not dispatched, so there is no result to return.' };
+    }
+    try {
+      await dispatchResults.register({
+        parentSessionId: parentSessionID,
+        sessionId: result.sessionId,
+        dispatchedAt,
+        ...(afterIdleId !== undefined ? { afterIdleId } : {}),
+      });
+      return { status: 'pending', note: RESULT_PENDING_NOTE };
+    } catch (error) {
+      return {
+        status: 'not-scheduled',
+        reason: `The session runs, but its result will not be delivered: ${error instanceof Error ? error.message : String(error)}. Read it later with session.messages if the user asks.`,
+      };
+    }
+  };
+
+  const executeSessionAction = async (action, input, contextDirectory, signal, contextSessionId) => {
     if (input.timeout !== undefined && input.wait !== true) throw new OpenChamberControlError('timeout requires wait', 400);
     if (input.lastAssistant === true && input.wait !== true) throw new OpenChamberControlError('lastAssistant requires wait', 400);
     assertSingleScope(input);
     const sessionID = asNonEmptyString(input.sessionId);
+    const parentSessionID = asNonEmptyString(contextSessionId);
+    const returnResult = input.returnResult === true;
+    if (returnResult) assertReturnResult(action, input, parentSessionID);
     let directory = asNonEmptyString(input.directory) || (!input.projectId ? asNonEmptyString(contextDirectory) : null);
     if (sessionID && action !== 'session.create' && !asNonEmptyString(input.directory) && !input.projectId) {
       const resolvedSessionDirectory = await resolveSessionDirectory(sessionID);
@@ -355,9 +468,16 @@ export const createOpenChamberControlService = (dependencies) => {
         result = await sessionService.fork(sessionID, payload);
       }
     }
+    if (returnResult) {
+      const publicResult = { ...result, resultDelivery: await scheduleResultDelivery(result, parentSessionID, startedAt) };
+      delete publicResult.baselineAssistantMessageId;
+      delete publicResult.baselineIdleRecordId;
+      return publicResult;
+    }
     if (input.wait !== true) {
       const publicResult = { ...result };
       delete publicResult.baselineAssistantMessageId;
+      delete publicResult.baselineIdleRecordId;
       return publicResult;
     }
     const client = await getClient(result.directory);
@@ -373,6 +493,7 @@ export const createOpenChamberControlService = (dependencies) => {
     });
     const publicResult = { ...result, sessionStatus: status };
     delete publicResult.baselineAssistantMessageId;
+    delete publicResult.baselineIdleRecordId;
     if (input.lastAssistant === true) {
       publicResult.lastAssistantMessage = (await sessionMessages(client, result.sessionId, 'assistant', 1))[0] || null;
     }
@@ -427,7 +548,6 @@ export const createOpenChamberControlService = (dependencies) => {
       }
       parameters.url = parsed.toString();
     }
-
 
     if (action === 'browser.click') {
       const selector = asNonEmptyString(input.selector);
@@ -588,6 +708,12 @@ export const createOpenChamberControlService = (dependencies) => {
             const result = await scheduledTaskService.upsert(projectID, buildScheduledTask(input));
             return { task: result.task, created: result.created };
           }
+          case 'schedule.update': {
+            const existing = (await scheduledTaskService.list(projectID)).find((task) => task.id === taskID);
+            if (!existing) throw new OpenChamberControlError(`Scheduled task not found: ${taskID}`, 404);
+            const result = await scheduledTaskService.upsert(projectID, patchScheduledTask(existing, input));
+            return { task: result.task, updated: true };
+          }
           case 'schedule.run':
             return scheduledTaskService.run(projectID, taskID);
           case 'schedule.delete':
@@ -596,13 +722,14 @@ export const createOpenChamberControlService = (dependencies) => {
             if (typeof input.disabled !== 'boolean') {
               throw new OpenChamberControlError('disabled is required for schedule.toggle', 400);
             }
-            const enabled = input.disabled === false;
-            return { task: await scheduledTaskService.setEnabled(projectID, taskID, enabled), enabled };
+            const task = await scheduledTaskService.setEnabled(projectID, taskID, input.disabled === false);
+            // What was saved, which is what the scheduler acts on.
+            return { task, enabled: task?.enabled === true };
           }
         }
       }
       if (action === 'session.create' || action === 'session.send' || action === 'session.fork') {
-        return executeSessionAction(action, input, contextDirectory, options.signal);
+        return executeSessionAction(action, input, contextDirectory, options.signal, options.contextSessionId);
       }
       if (action === 'session.link') {
         if (!sessionLinks) throw new OpenChamberControlError('Linking is not available on this server', 503);
@@ -629,10 +756,10 @@ export const createOpenChamberControlService = (dependencies) => {
           const response = await client.session.list(directory ? { directory } : {});
           // Archive is OpenChamber state; overlay it so callers keep reading
           // it off the session the way OpenCode used to report it.
-          let sessions = (Array.isArray(response?.data) ? response.data : []).map((session) => {
-            const archived = archivedAt(session?.id);
+          let sessions = await Promise.all((Array.isArray(response?.data) ? response.data : []).map(async (session) => {
+            const archived = await archivedAt(session?.id);
             return archived ? { ...session, time: { ...session.time, archived } } : session;
-          });
+          }));
           if (input.all !== true) sessions = sessions.filter((session) => !session?.time?.archived);
           sessions = sessions.slice(0, limit);
           if (input.withStatus === true) {

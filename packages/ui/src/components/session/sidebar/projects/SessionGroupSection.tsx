@@ -1,5 +1,6 @@
 import { DirectoryActionIndicator } from '../sessions/DirectoryActionIndicator';
-import { useLinearIssueStates } from '@/stores/useLinearIssueStateStore';
+import { useTrackedIssueStates, useTrackedLinearStates } from '@/stores/useTrackedItemsStore';
+import { githubThread, gitlabThread, linearIssue } from '@/lib/trackedItems/fromLinks';
 import React from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import type { Session } from '@/lib/opencode/model';
@@ -31,12 +32,12 @@ import {
   selectFolderRootNodes,
 } from '../sessions/sessionNodeItemUtils';
 import { useSessionFoldersStore } from '@/stores/useSessionFoldersStore';
+import { useFreshestSourceControlVisualSummaryForBranch } from '@/stores/useGitHubPrStatusStore';
 
 type FolderScope = { scopeKey: string; directory: string | null };
-import { getGitHubPrStatusKey, useLinkedIssueStates, usePrVisualSummary } from '@/stores/useGitHubPrStatusStore';
 import { getLinkedSidebarIssues, type LinkedSidebarIssue } from '@/lib/linkedIssues';
 import { buildSessionIssueItems } from '../sessions/sessionPrSummaries';
-import { openExternalUrl } from '@/lib/url';
+import { useOpenOnBoard } from '@/components/sourceBoard/openOnBoard';
 import { SIDEBAR_REF_TOOLTIP_CLOSE_DELAY_MS, SidebarRefLinks, type SidebarRefLink } from '../sessions/SidebarRefLinks';
 import { useI18n } from '@/lib/i18n';
 import { useChildStoreManager } from '@/sync/sync-context';
@@ -52,6 +53,8 @@ import { useSpacesStore } from '@/lib/spaces/spaces-store';
 import { useShiftKeyHeld } from '@/hooks/useShiftKeyHeld';
 import type { WorktreeMetadata } from '@/types/worktree';
 import { useWorktreeRemoving } from '@/lib/worktrees/worktreeRemovalState';
+import { formatChangeRequestReference } from '@/lib/source-control/identity';
+import { refTintStyle } from '@/lib/source-control/prVisualState';
 
 type DeleteFolderConfirm = {
   scopeKey: string;
@@ -313,6 +316,7 @@ const EMPTY_GROUP_ISSUES: readonly LinkedSidebarIssue[] = [];
 
 function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNode {
   const { t } = useI18n();
+  const openOnBoard = useOpenOnBoard();
   const {
     group,
     groupKey,
@@ -370,17 +374,18 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
   const isCollapsed = hasSessionSearchQuery ? false : collapsedGroups.has(groupKey);
   const worktreeRemoving = useWorktreeRemoving(!group.isMain && group.worktree ? group.worktree.path : null);
   // PR state for the worktree sub-header (grouped display mode).
-  const groupPrKey = React.useMemo(() => {
-    if (group.isMain || group.isArchivedBucket || hideGroupLabel) return null;
-    const directory = normalizePath(group.directory ?? null);
-    const branch = group.branch?.trim();
-    return directory && branch ? getGitHubPrStatusKey(directory, branch) : null;
-  }, [group.branch, group.directory, group.isArchivedBucket, group.isMain, hideGroupLabel]);
-  const groupPrSummary = usePrVisualSummary(groupPrKey);
+  const groupPrDirectory = group.isMain || group.isArchivedBucket || hideGroupLabel
+    ? null
+    : normalizePath(group.directory ?? null);
+  const groupPrBranch = group.isMain || group.isArchivedBucket || hideGroupLabel
+    ? null
+    : group.branch?.trim() || null;
+  const groupPrSummary = useFreshestSourceControlVisualSummaryForBranch(groupPrDirectory, groupPrBranch);
   const groupPrColor = groupPrSummary ? `var(--pr-${groupPrSummary.visualState})` : undefined;
   const groupPrStatusLabel = getPrStatusLabel(groupPrSummary, t);
+  const groupPrReference = groupPrSummary ? formatChangeRequestReference(groupPrSummary.provider, groupPrSummary.number) : '';
   const groupPrLabel = groupPrSummary
-    ? (groupPrStatusLabel ? `#${groupPrSummary.number} · ${groupPrStatusLabel}` : `#${groupPrSummary.number}`)
+    ? (groupPrStatusLabel ? `${groupPrReference} · ${groupPrStatusLabel}` : groupPrReference)
     : undefined;
   const childStores = useChildStoreManager();
   const bootstrapDirectories = React.useMemo(() => {
@@ -661,22 +666,27 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
     }
     return byKey.size > 0 ? [...byKey.values()] : EMPTY_GROUP_ISSUES;
   }, [allGroupSessions, group.isArchivedBucket, group.isMain, groupPrSummary, hideGroupLabel]);
-  const groupIssueRefs = React.useMemo(
-    () => groupIssues.flatMap((issue) => (issue.source === 'github' ? [{ owner: issue.owner, repo: issue.repo, number: issue.number }] : [])),
+  const groupGitHubIssueItems = React.useMemo(
+    () => groupIssues.flatMap((issue) => (issue.source === 'github' ? [githubThread('issue', issue)] : [])),
     [groupIssues],
   );
-  const groupIssueStates = useLinkedIssueStates(groupIssueRefs);
-  const groupLinearIdentifiers = React.useMemo(
-    () => groupIssues.flatMap((issue) => (issue.source === 'linear' ? [issue.identifier] : [])),
+  const groupIssueStates = useTrackedIssueStates(groupGitHubIssueItems);
+  const groupLinearItems = React.useMemo(
+    () => groupIssues.flatMap((issue) => (issue.source === 'linear' ? [linearIssue(issue.identifier)] : [])),
     [groupIssues],
   );
-  const groupLinearStates = useLinearIssueStates(groupLinearIdentifiers);
+  const groupLinearStates = useTrackedLinearStates(groupLinearItems);
+  const groupGitLabIssueItems = React.useMemo(
+    () => groupIssues.flatMap((issue) => (issue.source === 'gitlab' ? [gitlabThread('issue', issue.ref)] : [])),
+    [groupIssues],
+  );
+  const groupGitLabIssueStates = useTrackedIssueStates(groupGitLabIssueItems);
   const groupIssueItems = React.useMemo(
-    () => buildSessionIssueItems(groupIssues, groupIssueStates, groupLinearStates).map((item) => ({
+    () => buildSessionIssueItems(groupIssues, groupIssueStates, groupLinearStates, groupGitLabIssueStates).map((item) => ({
       ...item,
       text: item.statusKey ? `${item.label} · ${t(item.statusKey)}` : item.statusText ? `${item.label} · ${item.statusText}` : item.label,
     })),
-    [groupIssueStates, groupIssues, groupLinearStates, t],
+    [groupGitLabIssueStates, groupIssueStates, groupIssues, groupLinearStates, t],
   );
   const primaryGroupIssue = groupIssueItems[0] ?? null;
 
@@ -921,7 +931,7 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
   const groupPrLinks: SidebarRefLink[] = groupPrSummary && groupPrStatusLabel ? [{
     key: `pr:${groupPrSummary.number}`,
     icon: 'git-pull-request',
-    text: `#${groupPrSummary.number} · ${groupPrStatusLabel}`,
+    text: `${groupPrReference} · ${groupPrStatusLabel}`,
     title: groupPrSummary.title,
     color: groupPrColor,
     url: groupPrSummary.url,
@@ -1085,7 +1095,7 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
 
   return (
     <><div className={cn('oc-group', worktreeRemoving && 'opacity-60')} aria-busy={worktreeRemoving || undefined}>
-      <div className={cn('group/gh relative flex items-start justify-between gap-1 py-1 min-w-0 rounded-md', 'cursor-pointer')}>
+      <div className={cn('oc-ref-tint-scope group/gh relative flex items-start justify-between gap-1 py-1 min-w-0 rounded-md', 'cursor-pointer')}>
       <Tooltip disabled={groupPrSummary ? !groupPrStatusLabel : !primaryGroupIssue}>
       <TooltipTrigger asChild closeDelay={SIDEBAR_REF_TOOLTIP_CLOSE_DELAY_MS}>
       <div
@@ -1141,8 +1151,8 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
                     </span>
                   ) : <span className="relative inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center">
                     <Icon name={group.space ? 'box-3' : 'git-branch'}
-                      className={cn('h-3.5 w-3.5 shrink-0', !groupPrColor && 'text-muted-foreground', headerIconFadeClass)}
-                      style={groupPrColor ? { color: groupPrColor } : undefined}
+                      className={cn('h-3.5 w-3.5 shrink-0', groupPrColor ? 'oc-ref-tint' : 'text-muted-foreground', headerIconFadeClass)}
+                      style={groupPrColor ? refTintStyle(groupPrColor) : undefined}
                       aria-label={group.space ? t('sessions.sidebar.group.space') : undefined}
                     />
                     <span className={cn(
@@ -1163,18 +1173,18 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
                     // drag handle, so it keeps its pointer and keys to itself.
                     <button
                       type="button"
-                      className={cn('ml-auto flex-shrink-0 rounded text-[0.72rem] font-medium leading-none hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:no-underline', headerCoveredFadeClass)}
-                      style={groupPrColor ? { color: groupPrColor } : undefined}
+                      className={cn('ml-auto flex-shrink-0 rounded text-[0.72rem] font-medium leading-none hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:no-underline', groupPrColor && 'oc-ref-tint', headerCoveredFadeClass)}
+                      style={groupPrColor ? refTintStyle(groupPrColor) : undefined}
                       disabled={!groupPrSummary.url}
                       aria-label={groupPrLabel}
                       onPointerDown={(event) => event.stopPropagation()}
                       onKeyDown={(event) => event.stopPropagation()}
                       onClick={(event) => {
                         event.stopPropagation();
-                        if (groupPrSummary.url) void openExternalUrl(groupPrSummary.url);
+                        if (groupPrSummary.url) openOnBoard(groupPrSummary.url, group.directory ?? null, event);
                       }}
                     >
-                      #{groupPrSummary.number}
+                      {groupPrReference}
                     </button>
                   ) : primaryGroupIssue ? (
                     // Same contract as the PR number: opens the issue, keeps
@@ -1183,21 +1193,23 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
                       type="button"
                       className={cn(
                         'ml-auto inline-flex flex-shrink-0 items-center gap-1 rounded text-[0.72rem] font-medium leading-none hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                        !primaryGroupIssue.color && 'text-muted-foreground',
+                        primaryGroupIssue.color ? 'oc-ref-tint' : 'text-muted-foreground',
                         headerCoveredFadeClass,
                       )}
-                      style={primaryGroupIssue.color ? { color: primaryGroupIssue.color } : undefined}
+                      style={primaryGroupIssue.color ? refTintStyle(primaryGroupIssue.color) : undefined}
                       aria-label={groupIssueItems.map((item) => item.text).join(', ')}
                       onPointerDown={(event) => event.stopPropagation()}
                       onKeyDown={(event) => event.stopPropagation()}
                       onClick={(event) => {
                         event.stopPropagation();
-                        void openExternalUrl(primaryGroupIssue.url);
+                        // The `+N` only counts the others; the tooltip lists them.
+                        if (event.target instanceof Element && event.target.closest('[data-ref-more]')) return;
+                        openOnBoard(primaryGroupIssue.url, group.directory ?? null, event);
                       }}
                     >
                       <Icon name={primaryGroupIssue.icon} className="h-3 w-3" />
                       {primaryGroupIssue.label}
-                      {groupIssueItems.length > 1 ? <span className="text-muted-foreground">+{groupIssueItems.length - 1}</span> : null}
+                      {groupIssueItems.length > 1 ? <span data-ref-more className="text-muted-foreground">+{groupIssueItems.length - 1}</span> : null}
                     </button>
                   ) : null}
                 </span>
@@ -1227,11 +1239,11 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
       </TooltipTrigger>
       {groupPrLinks.length > 0 ? (
         <TooltipContent side="right" sideOffset={8} className="max-w-xs">
-          <SidebarRefLinks items={groupPrLinks} />
+          <SidebarRefLinks items={groupPrLinks} directory={group.directory ?? null} />
         </TooltipContent>
       ) : !groupPrSummary && primaryGroupIssue ? (
         <TooltipContent side="right" sideOffset={8} className="max-w-xs">
-          <SidebarRefLinks items={groupIssueItems} />
+          <SidebarRefLinks items={groupIssueItems} directory={group.directory ?? null} />
         </TooltipContent>
       ) : null}
       </Tooltip>

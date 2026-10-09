@@ -21,6 +21,9 @@
       "scope": "profile",
       "perSurface": true
     },
+    "locale": {
+      "scope": "profile"
+    },
     "lastDirectory": {
       "scope": "instance",
       "adopt": "bootstrap-only"
@@ -71,6 +74,12 @@
         "desktop"
       ]
     },
+    "desktopLinuxNativeFrame": {
+      "scope": "instance",
+      "surfaces": [
+        "desktop"
+      ]
+    },
     "desktopUiPassword": {
       "scope": "instance",
       "surfaces": [
@@ -103,6 +112,9 @@
       "scope": "instance"
     },
     "githubScopes": {
+      "scope": "instance"
+    },
+    "gitlabClientId": {
       "scope": "instance"
     },
     "skillCatalogs": {
@@ -268,6 +280,10 @@
       "scope": "profile",
       "perSurface": true
     },
+    "sidebarShowChatsSection": {
+      "scope": "profile",
+      "perSurface": true
+    },
     "workStatusSectionOrder": {
       "scope": "profile"
     },
@@ -288,6 +304,9 @@
       "perSurface": true
     },
     "collapsibleThinkingBlocks": {
+      "scope": "profile"
+    },
+    "expandReasoningWhileStreaming": {
       "scope": "profile"
     },
     "showTextJustificationActivity": {
@@ -329,6 +348,12 @@
     "codeBlockLineWrap": {
       "scope": "profile"
     },
+    "tableCellWrap": {
+      "scope": "profile"
+    },
+    "copyMessagesAsPlainText": {
+      "scope": "profile"
+    },
     "showTurnChangedFiles": {
       "scope": "profile"
     },
@@ -356,6 +381,9 @@
     "diffWrapLines": {
       "scope": "profile"
     },
+    "diffHideWhitespace": {
+      "scope": "profile"
+    },
     "gitChangesViewMode": {
       "scope": "profile"
     },
@@ -372,6 +400,9 @@
       "scope": "profile"
     },
     "fileEditorKeymap": {
+      "scope": "profile"
+    },
+    "fileEditorVimMappings": {
       "scope": "profile"
     },
     "autoSaveEnabled": {
@@ -448,6 +479,12 @@
     "monoFont": {
       "scope": "profile"
     },
+    "customUiFont": {
+      "scope": "profile"
+    },
+    "customMonoFont": {
+      "scope": "profile"
+    },
     "padding": {
       "scope": "profile",
       "perSurface": true
@@ -495,7 +532,13 @@
     "recentModels": {
       "scope": "profile"
     },
+    "lastSelectedModel": {
+      "scope": "profile"
+    },
     "recentAgents": {
+      "scope": "profile"
+    },
+    "favoriteAgents": {
       "scope": "profile"
     },
     "recentEfforts": {
@@ -520,6 +563,17 @@
         "desktop",
         "mobile"
       ]
+    },
+    "sessionReviewOfferEnabled": {
+      "scope": "profile",
+      "surfaces": [
+        "web",
+        "desktop",
+        "mobile"
+      ]
+    },
+    "sessionWorkKeepInGroup": {
+      "scope": "profile"
     },
     "sessionGoalEnabled": {
       "scope": "profile"
@@ -752,22 +806,6 @@
       "local": true
     },
     "diffFileTreeWidth": {
-      "scope": "device",
-      "local": true
-    },
-    "linearIssueListStatus": {
-      "scope": "device",
-      "local": true
-    },
-    "linearIssueListAssignee": {
-      "scope": "device",
-      "local": true
-    },
-    "linearIssueListTeamIdByRuntime": {
-      "scope": "device",
-      "local": true
-    },
-    "linearIssueListPriority": {
       "scope": "device",
       "local": true
     },

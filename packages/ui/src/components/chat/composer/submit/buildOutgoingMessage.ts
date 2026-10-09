@@ -15,8 +15,9 @@
 
 import type { JsonValue } from '@openchamber/sdk';
 import type { AttachedFile } from '@/stores/types/sessionTypes';
+import type { SourceControlProvider } from '@/lib/api/types';
 import type { InlineCommentDraft } from '@/stores/useInlineCommentDraftStore';
-import type { QueuedContextPart } from '@/stores/messageQueueStore';
+import type { QueuedContextPart, QueuedMessage } from '@/stores/messageQueueStore';
 import { contextPayloadFromDraft, createContextPart, type ContextPartMetadata, type ContextPartPayload } from '@/lib/messages/contextParts';
 
 export interface OutgoingPart {
@@ -56,10 +57,15 @@ export interface QueuedInput {
     context?: readonly QueuedContextPart[];
 }
 
+export const selectComposerQueue = (messages: readonly QueuedMessage[]): readonly QueuedMessage[] =>
+    messages.some((message) => message.scheduledTask)
+        ? messages.filter((message) => !message.scheduledTask)
+        : messages;
+
 /** An issue, PR or tracker item attached to the composer, as it is sent. */
 export type ComposerContextReference =
-    | { kind: 'github-issue'; number: number; title: string; url: string; contextText: string }
-    | { kind: 'github-pr'; number: number; title: string; url: string; context: string }
+    | { kind: 'repository-issue'; provider?: SourceControlProvider; number: number; title: string; url: string; contextText: string }
+    | { kind: 'change-request'; provider: SourceControlProvider; number: number; title: string; url: string; context: string }
     | { kind: 'linear-issue'; identifier: string; title: string; url: string; contextText: string }
     | {
         kind: 'guest';
@@ -102,7 +108,7 @@ export interface OutgoingMessageDeps {
     extractFileMentions: (text: string) => { text: string; attachments: AttachedFile[] };
     /** Normalize attachments for transport (server paths become file URLs). */
     sanitizeAttachments: (files: readonly AttachedFile[] | undefined) => AttachedFile[];
-    /** Skills named inline with `/name`. */
+    /** Skills named with `$name`. */
     collectSkillNames: (text: string) => string[];
 }
 
@@ -213,14 +219,14 @@ export function buildComposerContext(
 
     for (const reference of input.references) {
         switch (reference.kind) {
-            case 'github-issue': {
-                const { number, title, url, contextText } = reference;
-                attach(createContextPart({ kind: 'github-issue', number, title, url }, contextText));
+            case 'repository-issue': {
+                const { provider, number, title, url, contextText } = reference;
+                attach(createContextPart({ kind: 'repository-issue', ...(provider ? { provider } : {}), number, title, url }, contextText));
                 break;
             }
-            case 'github-pr': {
-                const { number, title, url, context: prContext } = reference;
-                attach(createContextPart({ kind: 'github-pr', number, title, url }, prContext));
+            case 'change-request': {
+                const { provider, number, title, url, context: prContext } = reference;
+                attach(createContextPart({ kind: 'change-request', provider, number, title, url }, prContext));
                 break;
             }
             case 'linear-issue': {
@@ -265,4 +271,21 @@ export function queuedContextToParts(context: readonly QueuedContextPart[]): Out
         parts.push({ text: part.text, synthetic: true, metadata: part.metadata });
     }
     return parts;
+}
+
+/**
+ * Expand `#snippet` references in the words of each attached comment, before
+ * the comments become synthetic context. Only `text` expands: the quoted code
+ * or message the comment points at is the user's evidence and stays verbatim.
+ * A comment whose expansion fails is sent as written.
+ */
+export async function expandCommentSnippets(
+    drafts: readonly InlineCommentDraft[],
+    expandText: (text: string) => Promise<string>,
+): Promise<InlineCommentDraft[]> {
+    return Promise.all(drafts.map(async (draft) => {
+        if (!draft.text) return draft;
+        const text = await expandText(draft.text).catch(() => draft.text);
+        return text === draft.text ? draft : { ...draft, text };
+    }));
 }

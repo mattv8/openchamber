@@ -1,10 +1,5 @@
-const asNonEmptyString = (value) => {
-  if (typeof value !== 'string') {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-};
+import { asNonEmptyString } from '../shared/guards.js';
+import { randomUUID } from 'node:crypto';
 
 const parseProjectID = (req) => asNonEmptyString(req?.params?.projectId);
 const parseTaskID = (req) => asNonEmptyString(req?.params?.taskId);
@@ -123,7 +118,13 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
     try {
       return res.json({ ok: true, ...await scheduledTaskService.run(projectID, taskID) });
     } catch (error) {
-      if (error?.statusCode) return res.status(error.statusCode).json({ error: error.message, ...(error.task ? { task: error.task } : {}) });
+      if (error?.statusCode) {
+        return res.status(error.statusCode).json({
+          error: error.message,
+          ...(error.task ? { task: error.task } : {}),
+          ...(error.busy ? { busy: error.busy } : {}),
+        });
+      }
       console.error('[ScheduledTasks] failed to run task:', error);
       return res.status(500).json({ error: 'Failed to run scheduled task' });
     }
@@ -150,6 +151,9 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
     // the same server at once. Recording it on the connection keeps the answer
     // current without any enable/disable setting to go stale.
     res.openchamberBrowserCapable = req.query?.browser === '1';
+    // Names this connection, so what a client asks to follow lives exactly as
+    // long as the connection that receives its changes.
+    res.openchamberConnectionId = randomUUID();
 
     const clients = getOpenChamberEventClients();
     clients.add(res);
@@ -159,6 +163,7 @@ export const registerScheduledTaskRoutes = (app, dependencies) => {
         type: 'openchamber:event-stream-ready',
         properties: {
           connectedAt: Date.now(),
+          connectionId: res.openchamberConnectionId,
         },
       });
     } catch {

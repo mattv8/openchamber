@@ -28,9 +28,10 @@ const uiState = { isMobile: false };
 const gitState = { fetchBranches: async () => undefined };
 let worktreeCreations = 0;
 let lastSetupCommands: string[] | undefined;
+let lastCreateNames: { branchName?: string; worktreeName?: string } | undefined;
 
 const selectProjectState = <T,>(selector: (state: typeof projectStoreState) => T): T => selector(projectStoreState);
-const selectGitHubAuthState = <T,>(selector: (state: typeof githubAuthState) => T): T => selector(githubAuthState);
+const selectSourceControlAuthEntry = () => githubAuthState;
 const selectLinearAuthState = <T,>(selector: (state: typeof linearAuthState) => T): T => selector(linearAuthState);
 const selectUIState = <T,>(selector: (state: typeof uiState) => T): T => selector(uiState);
 const selectGitState = <T,>(selector: (state: typeof gitState) => T): T => selector(gitState);
@@ -107,7 +108,7 @@ mock.module('@/components/ui/dropdown-trigger', () => ({ dropdownTriggerVariants
 mock.module('@/lib/utils', () => ({ cn: (...values: Array<string | false | null | undefined>) => values.filter(Boolean).join(' ') }));
 
 const actualProjectsStore = await import('@/stores/useProjectsStore');
-const actualGitHubAuthStore = await import('@/stores/useGitHubAuthStore');
+const actualSourceControlAuthStore = await import('@/stores/useSourceControlAuthStore');
 const actualLinearAuthStore = await import('@/stores/useLinearAuthStore');
 const actualUIStore = await import('@/stores/useUIStore');
 const actualGitStore = await import('@/stores/useGitStore');
@@ -116,9 +117,9 @@ mock.module('@/stores/useProjectsStore', () => ({
   ...actualProjectsStore,
   useProjectsStore: selectProjectState,
 }));
-mock.module('@/stores/useGitHubAuthStore', () => ({
-  ...actualGitHubAuthStore,
-  useGitHubAuthStore: selectGitHubAuthState,
+mock.module('@/stores/useSourceControlAuthStore', () => ({
+  ...actualSourceControlAuthStore,
+  useSourceControlAuthEntry: selectSourceControlAuthEntry,
 }));
 mock.module('@/stores/useLinearAuthStore', () => ({
   ...actualLinearAuthStore,
@@ -139,7 +140,7 @@ mock.module('@/sync/session-actions', () => ({
   updateSessionTitle: async () => undefined,
 }));
 mock.module('@/hooks/useRuntimeAPIs', () => ({
-  useRuntimeAPIs: () => ({ github: {}, git: null, linear: null }),
+  useRuntimeAPIs: () => ({ sourceControl: {}, git: null, linear: null }),
 }));
 mock.module('@/stores/useGitStore', () => ({
   ...actualGitStore,
@@ -151,9 +152,10 @@ mock.module('@/lib/worktrees/worktreeManager', () => ({
   ...actualWorktreeManager,
   validateWorktreeCreate: async () => ({ ok: true, errors: [] }),
 }));
-mock.module('@/lib/worktrees/worktreeCreate', () => ({ createWorktreeWithDefaults: async (_project: { id: string; path: string }, args: { setupCommands?: string[] }) => {
+mock.module('@/lib/worktrees/worktreeCreate', () => ({ createWorktreeWithDefaults: async (_project: { id: string; path: string }, args: { setupCommands?: string[]; branchName?: string; worktreeName?: string }) => {
   worktreeCreations += 1;
   lastSetupCommands = args.setupCommands;
+  lastCreateNames = { branchName: args.branchName, worktreeName: args.worktreeName };
   return null;
 } }));
 mock.module('@/lib/worktrees/worktreeBootstrap', () => ({ waitForWorktreeBootstrap: async () => undefined }));
@@ -171,6 +173,14 @@ mock.module('@/lib/git/branchNameGenerator', () => ({
   generateBranchSlug: () => 'draft-name',
 }));
 
+const actualReferenceSources = await import('@/components/references/referenceSources');
+// The project's GitHub read context comes from its binding; these tests never
+// reach a PR, so no binding is read.
+mock.module('@/components/references/referenceSources', () => ({
+  ...actualReferenceSources,
+  useGitHubReadContext: () => null,
+  useRepositoryReferenceProvider: () => 'github',
+}));
 mock.module('@/components/references/ReferencePickerDialog', () => ({
   ReferencePickerDialog: ({ onConfirm }: { onConfirm: ReferenceConfirm }) => {
     confirmReference = onConfirm;
@@ -316,6 +326,46 @@ describe('NewWorktreeDialog behavior', () => {
       });
     }
   }
+  test('opens on "PR or issue" with the item it was given already chosen', async () => {
+    const dom = installDom();
+    const root = createRoot(dom.container);
+    try {
+      await act(async () => root.render(
+        <I18nProvider>
+          <NewWorktreeDialog
+            open
+            onOpenChange={() => undefined}
+            initialSelection={{
+              source: 'github',
+              includeDiff: false,
+              reference: {
+                kind: 'issue',
+                number: 7,
+                title: 'Started from the board',
+                url: 'https://github.com/acme/project/issues/7',
+                body: '',
+                bodyTruncated: false,
+                createdAt: null,
+                updatedAt: null,
+                author: null,
+                labels: [],
+                commentCount: 0,
+                sourceRepo: { owner: 'acme', repo: 'project', source: 'origin' },
+                state: 'open',
+              },
+            }}
+          />
+        </I18nProvider>,
+      ));
+      const branchInput = dom.container.querySelector<HTMLInputElement>('input[placeholder="feature/my-awesome-feature"]');
+      expect(branchInput?.value).toBe('issue-7-draft-name');
+      expect(dom.container.textContent).toContain('Started from the board');
+    } finally {
+      await act(async () => root.unmount());
+      dom.restore();
+    }
+  });
+
   test('preserves selected issue values when available worktree names change', async () => {
     const dom = installDom();
     const root = createRoot(dom.container);
@@ -390,32 +440,56 @@ describe('NewWorktreeDialog behavior', () => {
       dom.restore();
     }
   });
-  test('runs the project setup through the trust path, or exactly what the user edited', async () => {
+  test('runs the project setup commands through the trust path', async () => {
     const dom = installDom();
     const root = createRoot(dom.container);
-    worktreeCreations = 0;
     try {
       await act(async () => root.render(<I18nProvider><NewWorktreeDialog open onOpenChange={() => undefined} /></I18nProvider>));
-      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-      const setAreaValue = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
       const branchInput = dom.container.querySelector<HTMLInputElement>('input[placeholder="feature/my-awesome-feature"]');
-      const setup = dom.container.querySelector<HTMLTextAreaElement>('textarea');
-      if (!setValue || !setAreaValue || !branchInput || !setup) throw new Error('Missing form fields');
-      expect(setup.value).toBe('bun install');
-      const enter = () => act(async () => { branchInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
-
-      await enter();
+      if (!branchInput) throw new Error('Missing branch field');
+      expect(dom.container.querySelector('textarea')).toBeNull();
+      await act(async () => { branchInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
       expect(lastSetupCommands).toEqual(['trusted-from-project']);
-
-      await act(async () => {
-        setAreaValue.call(setup, 'bun install\n  bun run build  \n');
-        setup.dispatchEvent(new Event('input', { bubbles: true }));
-      });
-      await enter();
-      expect(lastSetupCommands).toEqual(['bun install', 'bun run build']);
     } finally {
       await act(async () => root.unmount());
       dom.restore();
     }
   });
+
+  test('a branch name without Latin letters keeps the random folder name and stays creatable', async () => {
+    const dom = installDom();
+    const root = createRoot(dom.container);
+    lastCreateNames = undefined;
+    try {
+      await act(async () => root.render(<I18nProvider><NewWorktreeDialog open onOpenChange={() => undefined} /></I18nProvider>));
+      const branchInput = dom.container.querySelector<HTMLInputElement>('input[placeholder="feature/my-awesome-feature"]');
+      const folderInput = dom.container.querySelector<HTMLInputElement>('input[placeholder="my-worktree-directory"]');
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+      if (!branchInput || !folderInput || !setValue) throw new Error('Missing worktree form fields');
+      await act(async () => {
+        setValue.call(branchInput, '测试分支');
+        branchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      expect(folderInput.value).toBe('draft-name');
+      const createButton = [...dom.container.querySelectorAll('button')].find((button) => button.textContent === 'Create worktree');
+      expect(createButton?.disabled).toBe(false);
+
+      await act(async () => {
+        setValue.call(branchInput, 'feature/测试');
+        branchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      expect(folderInput.value).toBe('feature');
+
+      await act(async () => {
+        setValue.call(branchInput, '测试分支');
+        branchInput.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await act(async () => { branchInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
+      expect(lastCreateNames).toEqual({ branchName: '测试分支', worktreeName: 'draft-name' });
+    } finally {
+      await act(async () => root.unmount());
+      dom.restore();
+    }
+  });
+
 });

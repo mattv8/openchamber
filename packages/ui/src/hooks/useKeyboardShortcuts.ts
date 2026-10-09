@@ -30,12 +30,10 @@ import { enabledGuestSurfaces } from '@/lib/guests/surfaces';
 import { getRuntimeUrlResolver } from '@/lib/runtime-url';
 import { useGuestsStore } from '@/lib/guests/store';
 import { getVisibleContextRailSurfaces } from '@/lib/surfaces/registry';
-import { readEmbeddedThemeSearchParams } from '@/contexts/theme-embedded-bootstrap';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useFeatureFlagsStore } from '@/stores/useFeatureFlagsStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
-import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
-import { useLinearAuthStore } from '@/stores/useLinearAuthStore';
+import { useSourceControlAuthStore } from '@/stores/useSourceControlAuthStore';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { getCycledPrimaryAgentName } from '@/components/chat/mobileControlsUtils';
 import { focusChatInput } from '@/components/chat/composer/editor/dom';
@@ -66,6 +64,7 @@ export const useKeyboardShortcuts = () => {
   const { themeMode, setThemeMode } = useThemeSystem();
   const { phase: sessionPhase } = useCurrentSessionActivity();
   const abortPrimedUntilRef = React.useRef<number | null>(null);
+  const abortPrimedSessionRef = React.useRef<string | null>(null);
   const abortPrimedTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const themeModeRef = React.useRef(themeMode);
   const dispatcherRef = React.useRef<ShortcutDispatcher | null>(null);
@@ -104,6 +103,7 @@ export const useKeyboardShortcuts = () => {
       abortPrimedTimeoutRef.current = null;
     }
     abortPrimedUntilRef.current = null;
+    abortPrimedSessionRef.current = null;
     clearAbortPrompt();
   }, [clearAbortPrompt]);
 
@@ -129,6 +129,12 @@ export const useKeyboardShortcuts = () => {
     },
     open_timeline_dialog: () => {
       useUIStore.getState().setTimelineDialogOpen(true);
+    },
+    toggle_source_board: () => {
+      // A desktop and web page: the phone shell and VS Code have no board.
+      const state = useUIStore.getState();
+      if (state.isMobile || isVSCodeRuntime()) return false;
+      state.setSourceBoardOpen(!state.isSourceBoardOpen);
     },
     open_session_list: () => {
       const state = useUIStore.getState();
@@ -207,10 +213,6 @@ export const useKeyboardShortcuts = () => {
       openNewSessionDraft();
     },
     cycle_theme: () => {
-      if (readEmbeddedThemeSearchParams() !== null && window.parent && window.parent !== window) {
-        window.parent.postMessage({ type: 'openchamber:cycle-theme-request' }, window.location.origin);
-        return;
-      }
       const modes: Array<'light' | 'dark' | 'system'> = ['light', 'dark', 'system'];
       const activeElement = document.activeElement as HTMLElement | null;
       setThemeMode(modes[(modes.indexOf(themeModeRef.current) + 1) % modes.length]);
@@ -247,7 +249,7 @@ export const useKeyboardShortcuts = () => {
       const backward = combo && !combo.includes('shift') ? normalizeCombo(`shift+${combo}`) : '';
       const direction = backward && eventMatchesShortcut(event, backward) ? -1 : 1;
       const config = useConfigStore.getState();
-      const next = getCycledPrimaryAgentName(config.getVisibleAgents(), config.currentAgentName, direction);
+      const next = getCycledPrimaryAgentName(config.getVisibleAgents(), config.currentAgentName, direction, state.favoriteAgents);
       if (!next) return false;
       config.setAgent(next);
       state.addRecentAgent(next);
@@ -352,6 +354,7 @@ export const useKeyboardShortcuts = () => {
     config.setProvider(next.providerID);
     config.setModel(next.modelID);
     state.addRecentModel(next.providerID, next.modelID);
+    state.setLastSelectedModel(next.providerID, next.modelID);
   }
 
   React.useEffect(() => {
@@ -449,23 +452,35 @@ export const useKeyboardShortcuts = () => {
         || state.isAboutDialogOpen
         || state.runOverviewKey !== null
         || state.isImagePreviewOpen;
+      // Escape pressed inside a chat pinned in the side panel stops that
+      // chat's session, which the column names on its root; anywhere else it
+      // stops the main chat's.
+      const pinnedColumn = target?.closest<HTMLElement>('[data-chat-column="pinned"]') ?? null;
+      const abortSessionId = pinnedColumn ? pinnedColumn.dataset.chatSessionId ?? null : currentSessionId;
+      const abortable = pinnedColumn ? pinnedColumn.dataset.chatWorking === 'true' : sessionPhase !== 'idle';
       if (
         hasOverlay
-        || sessionPhase === 'idle'
-        || !currentSessionId
+        || !abortable
+        || !abortSessionId
       ) {
         resetAbortPriming();
         return;
       }
       const now = Date.now();
-      if (abortPrimedUntilRef.current && now < abortPrimedUntilRef.current) {
+      if (abortPrimedUntilRef.current && now < abortPrimedUntilRef.current && abortPrimedSessionRef.current === abortSessionId) {
         resetAbortPriming();
-        if (invokeRegistered('abort_run', event)) event.preventDefault();
+        if (pinnedColumn) {
+          event.preventDefault();
+          void sessionActions.abortCurrentOperation(abortSessionId);
+        } else if (invokeRegistered('abort_run', event)) {
+          event.preventDefault();
+        }
         return;
       }
       event.preventDefault();
-      const expiresAt = armAbortPrompt(3000) ?? now + 3000;
+      const expiresAt = armAbortPrompt(3000, abortSessionId) ?? now + 3000;
       abortPrimedUntilRef.current = expiresAt;
+      abortPrimedSessionRef.current = abortSessionId;
       if (abortPrimedTimeoutRef.current) clearTimeout(abortPrimedTimeoutRef.current);
       abortPrimedTimeoutRef.current = setTimeout(() => {
         if (abortPrimedUntilRef.current && Date.now() >= abortPrimedUntilRef.current) {
@@ -528,8 +543,7 @@ export const useKeyboardShortcuts = () => {
             isVSCode: isVSCodeRuntime(),
             screenWidth: window.innerWidth,
             tabs: panel?.tabs ?? [],
-            linearConnected: useLinearAuthStore.getState().status?.connected === true,
-            githubConnected: useGitHubAuthStore.getState().status?.connected === true,
+            sourceControlConnected: Object.values(useSourceControlAuthStore.getState().entries).some((entry) => entry.status?.status === 'connected'),
             extras: enabledGuestSurfaces(useGuestsStore.getState().guests, getRuntimeUrlResolver().authenticatedAsset),
           });
           const target = visibleSurfaces[switchSurfaceDigit - 1];

@@ -1,14 +1,20 @@
-import { execFileSync } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, mock, test, vi } from 'bun:test';
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 import { findBranchPrCandidates, invalidateRepoPullsCache, isHistoricalPrOfCheckout, resolveGitHubPrStatus } from './pr-status.js';
+import { createOctokit, getOctokitCacheIdentity } from './octokit.js';
 
 const listMock = mock(async () => ({ data: [] }));
 
 const isAncestorMock = mock(async () => false);
+
+const octokitFor = (token, accountId) => ({
+  openChamberCacheIdentity: getOctokitCacheIdentity(createOctokit(token, accountId)),
+  rest: { pulls: { list: listMock } },
+});
 
 const openPr = {
   number: 15,
@@ -40,7 +46,7 @@ const olderMergedPr = {
 };
 
 const call = (overrides = {}) => findBranchPrCandidates({
-  octokit: { rest: { pulls: { list: listMock } } },
+  octokit: octokitFor('test-token', 'test-account'),
   target: { repo: { owner: 'acme', repo: 'app' }, remoteName: 'origin' },
   branch: 'feature',
   sourceCandidates: [{ repo: { owner: 'acme', repo: 'app' } }],
@@ -138,6 +144,106 @@ describe('findBranchPrCandidates', () => {
     expect(listMock.mock.calls.length).toBe(callsAfterFirst);
   });
 
+  test('does not share cached pull lists across accounts', async () => {
+    listMock.mockResolvedValue({ data: [openPr] });
+    const first = await call({
+      octokit: octokitFor('first-token', 'first-account'),
+      force: false,
+    });
+    expect(first.open?.number).toBe(15);
+
+    listMock.mockResolvedValue({ data: [] });
+    const second = await call({
+      octokit: octokitFor('second-token', 'second-account'),
+      force: false,
+    });
+
+    expect(second.open).toBeNull();
+    expect(listMock).toHaveBeenCalledTimes(3);
+  });
+
+  test('does not share cached pull lists after an account credential changes', async () => {
+    listMock.mockResolvedValue({ data: [openPr] });
+    await call({ octokit: octokitFor('old-token', 'same-account'), force: false });
+
+    listMock.mockResolvedValue({ data: [] });
+    const result = await call({ octokit: octokitFor('new-token', 'same-account'), force: false });
+
+    expect(result.open).toBeNull();
+    expect(listMock).toHaveBeenCalledTimes(3);
+  });
+
+  test('invalidates pull caches for only the requested credential', async () => {
+    const firstOctokit = octokitFor('first-token', 'first-account');
+    const secondOctokit = octokitFor('second-token', 'second-account');
+    listMock.mockResolvedValue({ data: [openPr] });
+    await call({ octokit: firstOctokit, force: false });
+    await call({ octokit: secondOctokit, force: false });
+
+    invalidateRepoPullsCache('acme', 'app', firstOctokit);
+    listMock.mockClear();
+    listMock.mockResolvedValue({ data: [] });
+
+    expect((await call({ octokit: firstOctokit, force: false })).open).toBeNull();
+    expect((await call({ octokit: secondOctokit, force: false })).open?.number).toBe(15);
+    expect(listMock).toHaveBeenCalledTimes(2);
+  });
+
+  test('does not let an invalidated pull-list promise refill its exact cache key', async () => {
+    const firstOctokit = octokitFor('first-token', 'first-account');
+    const secondOctokit = octokitFor('second-token', 'second-account');
+    let releaseFirst;
+    let markFirstStarted;
+    const heldFirst = new Promise((resolve) => { releaseFirst = resolve; });
+    const firstStarted = new Promise((resolve) => { markFirstStarted = resolve; });
+    listMock.mockImplementation(async () => {
+      if (listMock.mock.calls.length === 1) {
+        markFirstStarted();
+        await heldFirst;
+      }
+      return { data: [openPr] };
+    });
+
+    const staleRead = call({ octokit: firstOctokit, force: false, includeHistory: false });
+    await firstStarted;
+    invalidateRepoPullsCache('acme', 'app', firstOctokit);
+    releaseFirst();
+    expect((await staleRead).open?.number).toBe(15);
+
+    await call({ octokit: firstOctokit, force: false, includeHistory: false });
+    await call({ octokit: secondOctokit, force: false, includeHistory: false });
+    await call({ octokit: secondOctokit, force: false, includeHistory: false });
+    expect(listMock).toHaveBeenCalledTimes(3);
+  });
+
+  test('does not remember history resolved after scoped invalidation', async () => {
+    const octokit = octokitFor('first-token', 'first-account');
+    let releaseHistory;
+    let markHistoryStarted;
+    const heldHistory = new Promise((resolve) => { releaseHistory = resolve; });
+    const historyStarted = new Promise((resolve) => { markHistoryStarted = resolve; });
+    let historyCalls = 0;
+    listMock.mockImplementation(async ({ head }) => {
+      if (head) {
+        historyCalls += 1;
+        if (historyCalls === 1) {
+          markHistoryStarted();
+          await heldHistory;
+        }
+      }
+      return { data: [] };
+    });
+
+    const staleRead = call({ octokit, force: true });
+    await historyStarted;
+    invalidateRepoPullsCache('acme', 'app', octokit);
+    releaseHistory();
+    await staleRead;
+
+    await call({ octokit, force: false });
+    expect(historyCalls).toBe(2);
+  });
+
   test('a found record outlives the shorter "no history" window', async () => {
     const startedAt = Date.now();
     listMock.mockImplementation(async ({ head }) => (
@@ -185,9 +291,10 @@ describe('findBranchPrCandidates', () => {
     listMock.mockImplementation(async ({ head }) => (
       head === 'fork-cache-b:feature' ? { data: [ownerBPr] } : { data: [] }
     ));
+    const octokit = octokitFor('test-token', 'test-account');
 
     await findBranchPrCandidates({
-      octokit: { rest: { pulls: { list: listMock } } },
+      octokit,
       target,
       branch: 'feature',
       sourceCandidates: [ownerA],
@@ -195,7 +302,7 @@ describe('findBranchPrCandidates', () => {
       includeHistory: true,
     });
     const { historical } = await findBranchPrCandidates({
-      octokit: { rest: { pulls: { list: listMock } } },
+      octokit,
       target,
       branch: 'feature',
       sourceCandidates: [ownerB],
@@ -203,6 +310,57 @@ describe('findBranchPrCandidates', () => {
     });
 
     expect(historical?.number).toBe(16);
+  });
+});
+
+describe('resolveGitHubPrStatus for a contributor fork checkout', () => {
+  let directory;
+
+  beforeEach(async () => {
+    directory = await fs.mkdtemp(path.join(os.tmpdir(), 'pr-status-fork-'));
+    const git = (...args) => execFileSync('git', args, { cwd: directory, stdio: 'ignore' });
+    git('init', '-q', '-b', 'fix/thing');
+    git('remote', 'add', 'origin', 'https://github.com/acme/app.git');
+    git('remote', 'add', 'pr-contrib', 'https://github.com/contrib/app.git');
+    invalidateRepoPullsCache('acme', 'app');
+  });
+
+  afterEach(async () => {
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+
+  const forkPr = {
+    number: 44,
+    state: 'open',
+    head: { ref: 'fix/thing', label: 'contrib:fix/thing', user: { login: 'contrib' }, repo: { owner: { login: 'contrib' }, name: 'app' } },
+  };
+  const octokit = () => ({
+    openChamberCacheIdentity: getOctokitCacheIdentity(createOctokit('fork-token', 'fork-account')),
+    rest: {
+      repos: {
+        get: async ({ owner, repo }) => ({
+          data: owner === 'contrib'
+            ? { default_branch: 'main', parent: { owner: { login: 'acme' }, name: repo } }
+            : { default_branch: 'main' },
+        }),
+      },
+      pulls: { list: async ({ owner }) => ({ data: owner === 'acme' ? [forkPr] : [] }) },
+    },
+  });
+
+  test('finds the fork PR when the caller names the fork remote as the branch source', async () => {
+    const status = await resolveGitHubPrStatus({
+      octokit: octokit(), directory, branch: 'fix/thing', remoteName: 'origin', sourceRemoteName: 'pr-contrib', force: true,
+    });
+    expect(status.pr?.number).toBe(44);
+    expect(status.repo).toMatchObject({ owner: 'acme', repo: 'app' });
+  });
+
+  test('without a source remote a same-named fork branch is not this branch', async () => {
+    const status = await resolveGitHubPrStatus({
+      octokit: octokit(), directory, branch: 'fix/thing', remoteName: 'origin', force: true,
+    });
+    expect(status.pr).toBeNull();
   });
 });
 
@@ -250,18 +408,18 @@ const git = (directory, ...args) => execFileSync('git', ['-C', directory, ...arg
 });
 
 const createRebasedCheckout = async (suffix, branch = 'feature') => {
-  const directory = await mkdtemp(join(tmpdir(), `oc-pr-history-${suffix}-`));
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), `oc-pr-history-${suffix}-`));
   git(directory, 'init', `--initial-branch=${branch}`);
   git(directory, 'config', 'user.name', 'Test User');
   git(directory, 'config', 'user.email', 'test@example.com');
-  await writeFile(join(directory, 'status.txt'), 'base\n');
+  await fs.writeFile(path.join(directory, 'status.txt'), 'base\n');
   git(directory, 'add', 'status.txt');
   git(directory, 'commit', '-m', 'base');
-  await writeFile(join(directory, 'status.txt'), 'rebased change\n');
+  await fs.writeFile(path.join(directory, 'status.txt'), 'rebased change\n');
   git(directory, 'commit', '-am', 'original change');
   const originalSha = git(directory, 'rev-parse', 'HEAD').trim();
   git(directory, 'reset', '--hard', 'HEAD~1');
-  await writeFile(join(directory, 'status.txt'), 'rebased change\n');
+  await fs.writeFile(path.join(directory, 'status.txt'), 'rebased change\n');
   git(directory, 'commit', '-am', 'rebased change');
   const baseSha = git(directory, 'rev-parse', 'HEAD~1').trim();
   git(directory, 'remote', 'add', 'origin', `https://github.com/fork-${suffix}/app-${suffix}.git`);
@@ -276,6 +434,7 @@ const createForkNetworkOctokit = ({ suffix, historicalPr, forkHistoricalPr = nul
   const parent = { owner: `upstream-${suffix}`, repo: `app-${suffix}` };
   const contributor = { owner: `contributor-${suffix}`, repo: `app-${suffix}` };
   const octokit = {
+    openChamberCacheIdentity: getOctokitCacheIdentity(createOctokit(`token-${suffix}`, `account-${suffix}`)),
     rest: {
       repos: {
         get: async ({ owner, repo }) => {
@@ -345,7 +504,7 @@ describe('resolveGitHubPrStatus fork history', () => {
       expect(repeated.pr?.number).toBe(historicalPr.number);
       expect(calls).toHaveLength(callsAfterFirst);
     } finally {
-      await rm(directory, { recursive: true, force: true });
+      await fs.rm(directory, { recursive: true, force: true });
     }
   });
 
@@ -364,7 +523,7 @@ describe('resolveGitHubPrStatus fork history', () => {
       const resolved = await resolveGitHubPrStatus({ octokit, directory, branch: 'feature', remoteName: 'origin', force: true });
       expect(resolved.pr?.number).toBe(openParentPr.number);
     } finally {
-      await rm(directory, { recursive: true, force: true });
+      await fs.rm(directory, { recursive: true, force: true });
     }
   });
 
@@ -384,7 +543,7 @@ describe('resolveGitHubPrStatus fork history', () => {
       expect(resolved.pr).toBeNull();
       expect(calls.some((call) => call.state === 'all')).toBe(false);
     } finally {
-      await rm(directory, { recursive: true, force: true });
+      await fs.rm(directory, { recursive: true, force: true });
     }
   });
 });

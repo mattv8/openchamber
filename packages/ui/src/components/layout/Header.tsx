@@ -56,6 +56,7 @@ import { useProjectActionsContext } from '@/hooks/useProjectActionsContext';
 import { SessionSwitcherDropdown } from '@/components/session/SessionSwitcherDropdown';
 import { SessionTabsStrip, type SessionTabMenuArgs } from './SessionTabsStrip';
 import { SessionMenuItemHint } from '@/components/session/SessionMenuItemHint';
+import { MoveChatToProjectDialog } from '@/components/session/MoveChatToProjectDialog';
 import { HeaderSessionArchiveMenuItem } from './HeaderSessionArchiveMenuItem';
 import { canUseElectronDesktopIPC, invokeDesktop, isDesktopLocalOriginActive, isDesktopShell, isVSCodeRuntime, startDesktopWindowDrag, type UpdateInfo } from '@/lib/desktop';
 import { desktopHostsGet, redactSensitiveUrl } from '@/lib/desktopHosts';
@@ -332,7 +333,6 @@ export const Header: React.FC = () => {
   const loadQuotaSettings = useQuotaStore((state) => state.loadSettings);
 
   const { isMobile } = useDeviceInfo();
-
   const headerRef = React.useRef<HTMLElement | null>(null);
 
   const [isDesktopApp, setIsDesktopApp] = React.useState<boolean>(() => {
@@ -756,6 +756,8 @@ export const Header: React.FC = () => {
       activation that a Rename on an inactive tab performs first. */
   const pendingHeaderRenameRef = React.useRef<string | null>(null);
   const [headerSessionTitleDraft, setHeaderSessionTitleDraft] = React.useState('');
+  const [moveChatDialogOpen, setMoveChatDialogOpen] = React.useState(false);
+  const hasProjects = useProjectsStore((state) => state.projects.length > 0);
   const [pendingHeaderRetentionAction, setPendingHeaderRetentionAction] = React.useState<{ action: 'archive' | 'delete'; sessionId: string } | null>(null);
   const headerRenameFormRef = React.useRef<HTMLFormElement | null>(null);
 
@@ -900,6 +902,35 @@ export const Header: React.FC = () => {
     });
   }, [currentSessionId, isCurrentSessionActive, isCurrentSessionMovingToWorktree, sessionDirectory, t]);
 
+  // A chat promoted into a project: the same tree move as "Move to worktree",
+  // with the project's root folder as the destination.
+  const moveCurrentChatToProject = React.useCallback((projectDirectory: string) => {
+    if (!currentSessionId || !sessionDirectory || isCurrentSessionActive || isCurrentSessionMovingToWorktree) return;
+    const sessions = useGlobalSessionsStore.getState().activeSessions;
+    const root = sessions.find((session) => session.id === currentSessionId);
+    if (!root) return;
+    const descendants: typeof sessions = [];
+    const pendingParentIds = [currentSessionId];
+    for (let index = 0; index < pendingParentIds.length; index += 1) {
+      for (const session of sessions) {
+        if (session.parentID !== pendingParentIds[index]) continue;
+        descendants.push(session);
+        pendingParentIds.push(session.id);
+      }
+    }
+    requestSessionTreeMove({
+      kind: 'project',
+      root,
+      descendants,
+      sourceDirectory: sessionDirectory,
+      projectDirectory,
+      messages: buildSessionTreeMoveMessages(t, {
+        success: 'sessions.moveChatToProject.success',
+        failure: 'sessions.moveChatToProject.failed',
+      }),
+    });
+  }, [currentSessionId, isCurrentSessionActive, isCurrentSessionMovingToWorktree, sessionDirectory, t]);
+
   const runHeaderRetentionAction = React.useCallback(async (action: 'archive' | 'delete', sessionId: string) => {
     const ids = [sessionId, ...collectSessionSubtreeIds(sessionId, [], action === 'delete')];
     const reopenId = useSessionUIStore.getState().currentSessionId === sessionId ? sessionId : null;
@@ -932,6 +963,7 @@ export const Header: React.FC = () => {
   const isScheduledSurfaceOpen = useUIStore((state) => state.isScheduledTasksDialogOpen);
   const isArchiveSurfaceOpen = useUIStore((state) => state.isArchivePageOpen);
   const isUsageStatsSurfaceOpen = useUIStore((state) => state.isUsageStatsPageOpen);
+  const isSourceBoardSurfaceOpen = useUIStore((state) => state.isSourceBoardOpen);
   const worktreesSurfaceProjectId = useUIStore((state) => state.worktreesPageProjectId);
   const spacesSurfaceProjectId = useUIStore((state) => (state.isolatedSpacesEnabled ? state.spacesPageProjectId : null));
   const runOverviewKey = useUIStore((state) => state.runOverviewKey);
@@ -953,6 +985,9 @@ export const Header: React.FC = () => {
     if (isUsageStatsSurfaceOpen) {
       return { title: t('usageStats.title'), subtitle: null };
     }
+    if (isSourceBoardSurfaceOpen) {
+      return { title: t('sourceBoard.title'), subtitle: null };
+    }
     if (worktreesSurfaceProjectId) {
       return {
         title: t('sessions.worktreesPage.title', { project: surfaceProjectLabel ?? '' }),
@@ -966,7 +1001,7 @@ export const Header: React.FC = () => {
       return { title: overviewRunTitle ?? t('multirun.overview.headerTitle'), subtitle: t('multirun.overview.headerTitle') };
     }
     return null;
-  }, [guestPage, isArchiveSurfaceOpen, overviewRunTitle, runOverviewKey, isScheduledSurfaceOpen, isUsageStatsSurfaceOpen, spacesSurfaceProjectId, surfaceProjectLabel, t, worktreesSurfaceProjectId]);
+  }, [guestPage, isArchiveSurfaceOpen, overviewRunTitle, runOverviewKey, isScheduledSurfaceOpen, isSourceBoardSurfaceOpen, isUsageStatsSurfaceOpen, spacesSurfaceProjectId, surfaceProjectLabel, t, worktreesSurfaceProjectId]);
 
 
   const actionDirectory = React.useMemo(() => {
@@ -1003,9 +1038,6 @@ export const Header: React.FC = () => {
     currentSessionId,
     sessionDirectory,
   ]);
-
-
-
 
   const handleOpenDraftMiniChat = React.useCallback(() => {
     void invokeDesktop('desktop_open_draft_mini_chat_window', {
@@ -1315,6 +1347,7 @@ export const Header: React.FC = () => {
   const renderSessionTabMenu = React.useCallback(({ session, open, isActive, select, closeOtherTabs, components }: SessionTabMenuArgs) => {
     const { Item, Separator } = components;
     const canMoveToWorktree = isActive && !isVSCode && !isChatContext && currentSession && !currentSession.parentId;
+    const canMoveToProject = isActive && !isVSCode && isChatContext && currentSession && !currentSession.parentId && hasProjects;
     return (
       <>
         <SessionMenuItemHint hint={t('sessions.sidebar.session.menuHint.rename')}>
@@ -1355,6 +1388,22 @@ export const Header: React.FC = () => {
             </span>
           </SessionMenuItemHint>
         ) : null}
+        {canMoveToProject ? (
+          <SessionMenuItemHint hint={isCurrentSessionActive
+            ? t('sessions.sidebar.session.moveToWorktree.tooltipBusy')
+            : t('sessions.moveChatToProject.hint')}>
+            <span className="block">
+              <Item
+                disabled={!sessionDirectory || isCurrentSessionActive || isCurrentSessionMovingToWorktree}
+                onClick={() => setMoveChatDialogOpen(true)}
+                className="w-full"
+              >
+                <Icon name="folder-shared" className="mr-1 size-4" />
+                {t('sessions.moveChatToProject.menu')}
+              </Item>
+            </span>
+          </SessionMenuItemHint>
+        ) : null}
         <Separator />
         <SessionMenuItemHint hint={t('sessions.sidebar.session.menuHint.closeOtherTabs')}>
           <Item onClick={closeOtherTabs}>
@@ -1374,7 +1423,7 @@ export const Header: React.FC = () => {
         </SessionMenuItemHint>
       </>
     );
-  }, [copySessionIdFor, currentSession, exportCurrentSession, isChatContext, isCurrentSessionActive, isCurrentSessionMovingToWorktree, isVSCode, moveCurrentSessionToWorktree, renderGuestSessionActionItems, sessionDirectory, t]);
+  }, [copySessionIdFor, currentSession, exportCurrentSession, hasProjects, isChatContext, isCurrentSessionActive, isCurrentSessionMovingToWorktree, isVSCode, moveCurrentSessionToWorktree, renderGuestSessionActionItems, sessionDirectory, t]);
 
   const renderDesktop = () => (
     <div
@@ -1491,12 +1540,19 @@ export const Header: React.FC = () => {
                 </span>
               )}
               {showHeaderMetaRow ? (
-                <span className="flex min-w-0 max-w-full items-center gap-1.5 truncate typography-micro text-[10.5px] font-normal leading-tight text-muted-foreground/75">
+                // A draft has no title of its own, so its project and branch
+                // are the title: title-sized, not a caption under nothing.
+                <span className={cn(
+                  'flex min-w-0 max-w-full items-center gap-1.5 truncate font-normal leading-tight',
+                  isNewSessionDraftOpen
+                    ? 'typography-ui-label text-[14px] text-foreground'
+                    : 'typography-micro text-[10.5px] text-muted-foreground/75',
+                )}>
                   {activeProjectLabel ? <span className="truncate">{activeProjectLabel}</span> : null}
                   {currentBranchLabel ? (
                     <span className="inline-flex min-w-0 items-center gap-0.5">
-                      <Icon name="git-branch" className="h-3 w-3 flex-shrink-0 text-muted-foreground/70" />
-                      <span className="truncate">{currentBranchLabel}</span>
+                      <Icon name="git-branch" className={cn('flex-shrink-0 text-muted-foreground/70', isNewSessionDraftOpen ? 'h-3.5 w-3.5' : 'h-3 w-3')} />
+                      <span className={cn('truncate', isNewSessionDraftOpen && 'text-muted-foreground')}>{currentBranchLabel}</span>
                     </span>
                   ) : null}
                   {!isNewSessionDraftOpen && worktreeBadgeKind ? (
@@ -1571,7 +1627,7 @@ export const Header: React.FC = () => {
             </div>
           </div>
         ) : (
-          <div className="app-region-no-drag flex h-full min-w-0 flex-1 items-center gap-0.5 text-left">
+          <div className="flex h-full min-w-0 flex-1 items-center gap-0.5 text-left">
             {!isSidebarOpen ? (
               <SessionSwitcherDropdown align="start">
                 <button
@@ -1722,6 +1778,11 @@ export const Header: React.FC = () => {
       >
         {renderDesktop()}
       </header>
+      <MoveChatToProjectDialog
+        open={moveChatDialogOpen}
+        onOpenChange={setMoveChatDialogOpen}
+        onPick={moveCurrentChatToProject}
+      />
       <Dialog open={pendingHeaderRetentionAction !== null} onOpenChange={(open) => { if (!open) setPendingHeaderRetentionAction(null); }}>
         <DialogContent showCloseButton={false} className="max-w-sm gap-5">
           <DialogHeader>

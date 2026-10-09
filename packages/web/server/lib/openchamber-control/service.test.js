@@ -55,6 +55,16 @@ const createService = (overrides = {}) => {
 };
 
 describe('OpenChamber control service', () => {
+  it('creates a target task with inherited selection and accepts retargeting on update', async () => {
+    const { service, scheduledTaskService } = createService();
+    scheduledTaskService.upsert.mockImplementation(async (_project, task) => ({ task }));
+    const created = await service.execute('schedule.create', { name: 'Reuse', prompt: 'Continue', daily: '09:00', targetSessionId: 'ses_target' }, '/repo');
+    expect(created.task).toMatchObject({ targetSessionId: 'ses_target', execution: { useDefaults: true } });
+    scheduledTaskService.list.mockResolvedValue([{ ...created.task, id: 'task-1' }]);
+    await service.execute('schedule.update', { taskId: 'task-1', targetSessionId: 'ses_second', agent: 'plan' }, '/repo');
+    expect(scheduledTaskService.upsert.mock.calls[1][1]).toMatchObject({ targetSessionId: 'ses_second', execution: { agent: 'plan' } });
+    expect(scheduledTaskService.upsert.mock.calls[1][1].execution.useDefaults).toBeUndefined();
+  });
   it('serves project and model projections without an HTTP or CLI round trip', async () => {
     const { service } = createService();
     await expect(service.execute('projects.list')).resolves.toEqual({
@@ -86,6 +96,46 @@ describe('OpenChamber control service', () => {
     }));
   });
 
+  it('updates a scheduled task in place, changing only the named fields', async () => {
+    const { service, scheduledTaskService } = createService();
+    const existing = {
+      id: 'task-1',
+      name: 'Nightly',
+      enabled: true,
+      schedule: { kind: 'daily', times: ['09:00'], timezone: 'UTC' },
+      execution: { prompt: 'Old', providerID: 'a', modelID: 'm', variant: 'high', agent: 'build' },
+      state: { lastRunAt: 5, lastStatus: 'success' },
+    };
+    scheduledTaskService.list.mockResolvedValue([existing]);
+    scheduledTaskService.upsert.mockImplementation(async (_project, task) => ({ task, created: false }));
+
+    await service.execute('schedule.update', { taskId: 'task-1', prompt: 'New', model: 'b/n', cron: '0 * * * *' }, '/repo');
+    const saved = scheduledTaskService.upsert.mock.calls[0][1];
+    expect(saved).toEqual({
+      id: 'task-1',
+      name: 'Nightly',
+      enabled: true,
+      schedule: { kind: 'cron', cron: '0 * * * *' },
+      execution: { prompt: 'New', providerID: 'b', modelID: 'n', agent: 'build' },
+    });
+    // No state in the patch: the stored run history is kept.
+    expect(saved.state).toBeUndefined();
+
+    await service.execute('schedule.update', { taskId: 'task-1', timezone: 'Europe/Kyiv', disabled: true }, '/repo');
+    expect(scheduledTaskService.upsert.mock.calls[1][1]).toMatchObject({
+      enabled: false,
+      schedule: { kind: 'daily', times: ['09:00'], timezone: 'Europe/Kyiv' },
+      execution: existing.execution,
+    });
+  });
+
+  it('refuses to update a missing task or one driven by a loop file', async () => {
+    const { service, scheduledTaskService } = createService();
+    await expect(service.execute('schedule.update', { taskId: 'nope', prompt: 'x' }, '/repo')).rejects.toThrow('Scheduled task not found');
+    scheduledTaskService.list.mockResolvedValue([{ id: 'loop:project:x', loopFile: '/repo/.agents/loops/x.md', name: 'x', execution: {}, schedule: {} }]);
+    await expect(service.execute('schedule.update', { taskId: 'loop:project:x', prompt: 'x' }, '/repo')).rejects.toThrow('change that file instead');
+  });
+
   it('does not combine an explicit schedule project with the tool context directory', async () => {
     const { service, scheduledTaskService } = createService();
     await service.execute('schedule.list', { projectId: ' project-1 ' }, '/current-session');
@@ -110,6 +160,15 @@ describe('OpenChamber control service', () => {
       enabled: false,
     });
     expect(scheduledTaskService.setEnabled).toHaveBeenCalledWith('project-1', 'task-1', false);
+  });
+
+  it('reports the enabled state that was saved, not the one requested', async () => {
+    const { service, scheduledTaskService } = createService();
+    scheduledTaskService.setEnabled.mockResolvedValue({ id: 'task-1', enabled: false });
+    await expect(service.execute('schedule.toggle', { taskId: 'task-1', disabled: false }, '/repo')).resolves.toEqual({
+      task: { id: 'task-1', enabled: false },
+      enabled: false,
+    });
   });
 
   it('returns an actionable taskId error before resolving schedule scope', async () => {
@@ -200,7 +259,8 @@ describe('OpenChamber control service', () => {
 
   it('filters sessions archived in OpenChamber state and adds global statuses', async () => {
     const { service, client } = createService({
-      archiveStore: { isArchived: (id) => (id === 'ses_archived' ? 100 : null) },
+      // Async like the real store (`openchamber-sessions/archive-store.js`).
+      archiveStore: { archivedAt: async (id) => (id === 'ses_archived' ? 100 : null) },
     });
     client.session.list.mockResolvedValue({ data: [
       { id: 'ses_active', location: { directory: '/repo' }, time: {} },
@@ -435,5 +495,79 @@ describe('browser capture', () => {
     expect(request).toHaveBeenLastCalledWith('browser.capture', {}, expect.objectContaining({
       context: { directory, sessionId: null },
     }));
+  });
+});
+
+describe('returning a dispatched session result', () => {
+  const createReturningService = (overrides = {}) => {
+    const dispatchResults = { register: vi.fn(async () => ({ id: 'dispatch-1' })) };
+    const created = createService({ dispatchResults, now: () => 1_000, ...overrides });
+    created.sessionService.create.mockResolvedValue({ sessionId: 'ses_child', directory: '/repo', promptDispatched: true });
+    created.sessionService.send.mockResolvedValue({ sessionId: 'ses_child', directory: '/repo', promptDispatched: true, baselineAssistantMessageId: 'msg_old' });
+    return { ...created, dispatchResults };
+  };
+
+  it('returns at once and registers the delivery to the calling session', async () => {
+    const { service, dispatchResults, client } = createReturningService();
+    const result = await service.execute('session.create', { prompt: 'Check the build', returnResult: true }, '/repo', { contextSessionId: 'ses_parent' });
+
+    expect(dispatchResults.register).toHaveBeenCalledWith({ parentSessionId: 'ses_parent', sessionId: 'ses_child', dispatchedAt: 1_000 });
+    expect(result.resultDelivery).toEqual({ status: 'pending', note: expect.stringContaining('delivered to you automatically') });
+    expect(result.resultDelivery.note).toContain('Do not poll');
+    // Nothing waits: no status or message reads happen for the dispatch.
+    expect(client.session.active).not.toHaveBeenCalled();
+  });
+
+  it('hands the end-of-run baseline to the delivery and keeps it from the agent', async () => {
+    const { service, dispatchResults, sessionService } = createReturningService();
+    sessionService.send.mockResolvedValue({ sessionId: 'ses_child', directory: '/repo', promptDispatched: true, baselineIdleRecordId: 'msg_idle_old' });
+    const result = await service.execute('session.send', { sessionId: 'ses_child', prompt: 'Again', returnResult: true }, '/repo', { contextSessionId: 'ses_parent' });
+
+    expect(dispatchResults.register).toHaveBeenCalledWith({
+      parentSessionId: 'ses_parent', sessionId: 'ses_child', dispatchedAt: 1_000, afterIdleId: 'msg_idle_old',
+    });
+    expect(result).not.toHaveProperty('baselineIdleRecordId');
+  });
+
+  it('does not schedule a delivery for a prompt that never landed', async () => {
+    const { service, dispatchResults, sessionService } = createReturningService();
+    sessionService.create.mockResolvedValue({ sessionId: 'ses_child', directory: '/repo', promptDispatched: false, promptError: 'no queued message' });
+    const result = await service.execute('session.create', { prompt: 'Check', returnResult: true }, '/repo', { contextSessionId: 'ses_parent' });
+
+    expect(dispatchResults.register).not.toHaveBeenCalled();
+    expect(result.resultDelivery.status).toBe('not-scheduled');
+  });
+
+  it('reports a failed registration instead of claiming the result is coming', async () => {
+    const { service, dispatchResults } = createReturningService();
+    dispatchResults.register.mockRejectedValue(new Error('disk full'));
+    const result = await service.execute('session.send', { sessionId: 'ses_child', prompt: 'Again', returnResult: true }, '/repo', { contextSessionId: 'ses_parent' });
+
+    expect(result.resultDelivery).toEqual({ status: 'not-scheduled', reason: expect.stringContaining('disk full') });
+    expect(result).not.toHaveProperty('baselineAssistantMessageId');
+  });
+
+  it.each([
+    ['without a calling session', { prompt: 'x', returnResult: true }, {}, 'needs a calling session'],
+    ['without a prompt', { returnResult: true }, { contextSessionId: 'ses_parent' }, 'returnResult requires prompt'],
+    ['combined with wait', { prompt: 'x', returnResult: true, wait: true }, { contextSessionId: 'ses_parent' }, 'cannot be combined with wait'],
+  ])('refuses returnResult %s before creating anything', async (_label, input, options, message) => {
+    const { service, sessionService } = createReturningService();
+    await expect(service.execute('session.create', input, '/repo', options)).rejects.toThrow(message);
+    expect(sessionService.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses to deliver a session\'s result to itself', async () => {
+    const { service, sessionService } = createReturningService();
+    await expect(service.execute('session.send', { sessionId: 'ses_parent', prompt: 'x', returnResult: true }, '/repo', { contextSessionId: 'ses_parent' }))
+      .rejects.toThrow('to itself');
+    expect(sessionService.send).not.toHaveBeenCalled();
+  });
+
+  it('answers 503 on a server that cannot deliver results', async () => {
+    const { service, sessionService } = createService();
+    await expect(service.execute('session.create', { prompt: 'x', returnResult: true }, '/repo', { contextSessionId: 'ses_parent' }))
+      .rejects.toMatchObject({ statusCode: 503 });
+    expect(sessionService.create).not.toHaveBeenCalled();
   });
 });

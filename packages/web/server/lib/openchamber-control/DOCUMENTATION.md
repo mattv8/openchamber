@@ -13,8 +13,18 @@ other.
   scheduled-task action allowlist. `actions.js` marks CLI-only actions with
   `agentExposed: false` (currently `schedule.status`); the agent tool consumes
   the filtered `OPENCHAMBER_AGENT_TOOL_*` exports. `schedule.toggle` requires
-  the `disabled` boolean and replaces separate enable/disable actions;
+  the `disabled` boolean and replaces separate enable/disable actions; its
+  `enabled` is the saved state, never the requested one. Loop tasks and the
+  refusal to enable a repository loop are the scheduled-task service's rules
+  (`../scheduled-tasks/DOCUMENTATION.md`, *Local approval*).
   `schedule.list` also returns scheduler status as `scheduler`.
+  `schedule.update` patches a task in place: only the fields the call names
+  change, the id and run state stay, and a task driven by a loop file is
+  refused (the file is its source).
+  `schedule.create` and `schedule.update` accept `targetSessionId`, validated
+  by the scheduled-task service. An empty update clears the target. Create
+  without a model inherits the target selection; an explicit agent overrides
+  it. A task without a target still requires a model.
 - `routes.js` is the authenticated CLI HTTP adapter. It forwards one action,
   preserves service status and partial-result details, and propagates request
   cancellation.
@@ -28,9 +38,18 @@ other.
 
 - Session status and messages come from official directory-scoped OpenCode
   APIs. Message output includes only ordered `text` parts.
-- Wait never treats an initial idle response as completion after dispatch. It
-  requires observed activity or a newly completed assistant message.
+- Wait (CLI only; the agent tool refuses it) never treats an initial idle
+  response as completion after dispatch. It requires observed activity or a
+  newly completed assistant message.
 - Timeout and cancellation are failures, never authoritative idle results.
+- `returnResult` on create/send/fork hands the dispatched session's final
+  answer back to the calling session (`options.contextSessionId`) through
+  `../dispatch-results/`. It is checked before anything is created: it needs a
+  calling session, a prompt, an injected `dispatchResults` (else 503), no
+  `wait`, and a send may not target the caller itself. After the dispatch the
+  result carries `resultDelivery`: `pending` with a note for the agent, or
+  `not-scheduled` with the reason (the prompt never landed, or registering
+  failed); the session keeps running either way, so neither is thrown.
 - Validation that protects side effects runs before session creation or
   dispatch. An explicitly requested model, agent, or variant is checked against
   the directory's own OpenCode agent and provider lists before any session,

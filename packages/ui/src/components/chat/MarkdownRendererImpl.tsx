@@ -17,7 +17,7 @@ import { useUIStore } from '@/stores/useUIStore';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import type { EditorAPI } from '@/lib/api/types';
-import { isVSCodeRuntime } from '@/lib/desktop';
+import { isDesktopLocalOriginActive, isVSCodeRuntime, openDesktopPath } from '@/lib/desktop';
 import { openSessionLink } from '@/lib/router/openSessionFromRoute';
 import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
 import { isMobileSurfaceRuntime } from '@/lib/runtimeSurface';
@@ -34,6 +34,7 @@ import { getMarkdownSyntaxVars } from './markdown/markdownSyntaxVars';
 import {
   attachMarkdownInteractions,
   applyMarkdownCodeBlockWrapState,
+  applyMarkdownTableWrapState,
   decorateMarkdown,
   getMarkdownCodeText,
   stabilizeMarkdownTableWidths,
@@ -42,6 +43,8 @@ import {
   type MermaidControlOptions,
   type MermaidRender,
 } from './markdown/decorate';
+import type { RenderedCopyFormat } from './markdown/selectionMarkdown';
+import { observeMarkdownTableWidth } from './markdown/tableWidthObserver';
 import { findTextPosition } from './markdown/textPosition';
 import { createMermaidViewerRegistry, MERMAID_BLOCK_SELECTOR, shouldRefreshMermaidViewers } from './markdown/mermaidViewer';
 import {
@@ -52,7 +55,7 @@ import {
   parseFileReference,
   type ParsedFileReference,
 } from './fileReferenceParser';
-import { fileReferenceExists } from './fileReferenceStat';
+import { fileReferenceExists, findUniqueFileByName } from './fileReferenceStat';
 import { streamPerfCount, streamPerfObserve } from '@/stores/utils/streamDebug';
 import { detachedMarkdownDomCache, type DetachedMarkdownDomKey } from './markdown/detachedMarkdownDomCache';
 import { TimelineRevealGateContext } from './timelineRevealGate';
@@ -133,7 +136,7 @@ const stripLeadingFrontmatter = (markdown: string): string => {
 
 export type MarkdownVariant = 'assistant' | 'tool' | 'reasoning';
 
-interface MarkdownRendererProps {
+export interface MarkdownRendererProps {
   content: string;
   part?: Part;
   messageId: string;
@@ -433,10 +436,20 @@ const useFileReferenceInteractions = ({
       unwrapBlockCodePathTokens(container);
     };
 
-    const openFileReference = async (sourceElement: HTMLElement) => {
+    const openFileReference = async (sourceElement: HTMLElement, options?: { external: boolean }) => {
       const raw = sourceElement.getAttribute('data-openchamber-file-ref') || extractPathCandidateFromElement(sourceElement);
-      const resolved = getResolvedReference(raw, effectiveDirectory);
-      if (!resolved) {
+      const parsedReference = getResolvedReference(raw, effectiveDirectory);
+      if (!parsedReference) {
+        return;
+      }
+      // Annotation stored where the file really is, which differs from the
+      // written path when a bare name was found elsewhere in the workspace.
+      const storedPath = sourceElement.getAttribute('data-openchamber-file-path');
+      const resolved = storedPath ? { ...parsedReference, resolvedPath: storedPath } : parsedReference;
+
+      // Cmd/Ctrl-click hands the file to the OS, which opens it with the app
+      // that owns its type; where that is not possible it opens here as usual.
+      if (options?.external && isDesktopLocalOriginActive() && await openDesktopPath(resolved.resolvedPath)) {
         return;
       }
 
@@ -542,12 +555,17 @@ const useFileReferenceInteractions = ({
         linkedCount += 1;
 
         const outsideWorkspace = !isFilePathWithinDirectory(resolved.resolvedPath, effectiveDirectory);
-        const existsPromise = outsideWorkspace
-          ? Promise.resolve(true)
-          : fileReferenceExists(resolved.resolvedPath, effectiveDirectory);
+        // A bare name (`Renderer.tsx:42`) that is not at the root is looked up
+        // by name in the workspace, once per name; only a unique match links.
+        const isBareName = !resolved.path.includes('/') && !resolved.path.includes('\\');
+        const targetPromise: Promise<string | null> = outsideWorkspace
+          ? Promise.resolve(resolved.resolvedPath)
+          : fileReferenceExists(resolved.resolvedPath, effectiveDirectory).then((exists) => (
+            exists ? resolved.resolvedPath : isBareName ? findUniqueFileByName(resolved.path, effectiveDirectory) : null
+          ));
 
-        void existsPromise.then((exists) => {
-          if (cancelled || !exists || !container.contains(candidate)) {
+        void targetPromise.then((targetPath) => {
+          if (cancelled || !targetPath || !container.contains(candidate)) {
             return;
           }
 
@@ -559,7 +577,7 @@ const useFileReferenceInteractions = ({
 
           candidate.setAttribute('data-openchamber-file-link', 'true');
           candidate.setAttribute('data-openchamber-file-ref', latestRawCandidate);
-          candidate.setAttribute('data-openchamber-file-path', latestResolved.resolvedPath);
+          candidate.setAttribute('data-openchamber-file-path', targetPath);
           candidate.setAttribute('title', 'Open file');
           if (candidate.tagName.toLowerCase() !== 'a') {
             candidate.setAttribute('role', 'button');
@@ -808,6 +826,10 @@ const mermaidColorsFromTheme = (theme: Theme) => ({
   font: 'system-ui, sans-serif',
 });
 
+const readCopyFormat = (): RenderedCopyFormat => (
+  useUIStore.getState().copyMessagesAsPlainText ? 'plain' : 'markdown'
+);
+
 const useDecorateContext = (
   currentTheme: Theme,
   deferCodeLineNumberSync: boolean,
@@ -820,6 +842,8 @@ const useDecorateContext = (
     copied: t('markdownRenderer.code.actions.copiedTitle'),
     enableCodeWrap: t('markdownRenderer.code.actions.enableWrapTitle'),
     disableCodeWrap: t('markdownRenderer.code.actions.disableWrapTitle'),
+    enableTableWrap: t('markdownRenderer.table.actions.enableWrapTitle'),
+    disableTableWrap: t('markdownRenderer.table.actions.disableWrapTitle'),
     copyTable: t('markdownRenderer.table.actions.copyTitle'),
     downloadTable: t('markdownRenderer.table.actions.downloadTitle'),
     copyDiagram: t('markdownRenderer.mermaid.actions.copySourceTitle'),
@@ -836,6 +860,11 @@ const useDecorateContext = (
   const toggleCodeBlockLineWrap = React.useCallback(() => {
     setCodeBlockLineWrap(!useUIStore.getState().codeBlockLineWrap);
   }, [setCodeBlockLineWrap]);
+  const tableCellWrap = useUIStore((state) => state.tableCellWrap);
+  const setTableCellWrap = useUIStore((state) => state.setTableCellWrap);
+  const toggleTableCellWrap = React.useCallback(() => {
+    setTableCellWrap(!useUIStore.getState().tableCellWrap);
+  }, [setTableCellWrap]);
 
   return React.useMemo<DecorateContext>(() => {
     const colors = mermaidColorsFromTheme(currentTheme);
@@ -850,8 +879,19 @@ const useDecorateContext = (
           return {};
         }
       });
-    return { labels, mermaidControls, codeBlockLineWrap, deferCodeLineNumberSync, onToggleCodeBlockLineWrap: toggleCodeBlockLineWrap, renderMermaid, onPreviewLoopback };
-  }, [currentTheme, labels, mermaidControls, codeBlockLineWrap, deferCodeLineNumberSync, toggleCodeBlockLineWrap, onPreviewLoopback]);
+    return {
+      labels,
+      mermaidControls,
+      codeBlockLineWrap,
+      deferCodeLineNumberSync,
+      onToggleCodeBlockLineWrap: toggleCodeBlockLineWrap,
+      tableCellWrap,
+      onToggleTableCellWrap: toggleTableCellWrap,
+      renderMermaid,
+      onPreviewLoopback,
+      getCopyFormat: readCopyFormat,
+    };
+  }, [currentTheme, labels, mermaidControls, codeBlockLineWrap, deferCodeLineNumberSync, toggleCodeBlockLineWrap, tableCellWrap, toggleTableCellWrap, onPreviewLoopback]);
 };
 
 // Runs the async render pipeline into the container and keeps a stable
@@ -884,6 +924,7 @@ const useMorphdomMarkdown = ({
   const mermaidViewerRef = React.useRef<ReturnType<typeof createMermaidViewerRegistry> | null>(null);
   const renderRevisionRef = React.useRef(0);
   const tableLayoutFrameRef = React.useRef<number | null>(null);
+  const stopTableWidthWatchRef = React.useRef<(() => void) | null>(null);
   // A provisional first paint (blocks not in the settled cache) holds the
   // timeline reveal until the async render lands, so the session opens with
   // final code highlighting instead of a visible restyle.
@@ -914,6 +955,7 @@ const useMorphdomMarkdown = ({
     }
     mermaidViewerRef.current.refresh();
   }, [containerRef]);
+  const { tableCellWrap } = ctx;
   const scheduleTableLayout = React.useCallback(() => {
     if (!tableLayoutSettled) return;
     const previousFrame = tableLayoutFrameRef.current;
@@ -925,12 +967,24 @@ const useMorphdomMarkdown = ({
       if (renderRevisionRef.current !== renderRevision) return;
       const container = containerRef.current;
       const target = container?.querySelector<HTMLElement>('[data-markdown-content]') ?? container;
-      if (target) stabilizeMarkdownTableWidths(target);
+      if (!target) return;
+      stabilizeMarkdownTableWidths(target, tableCellWrap);
+      // Column widths are fixed for the width they were laid out in, so a
+      // resized chat or document lays the tables out again.
+      if (!stopTableWidthWatchRef.current && target.querySelector('table[data-markdown="table"]')) {
+        stopTableWidthWatchRef.current = observeMarkdownTableWidth(target, () => scheduleTableLayoutRef.current());
+      }
     });
     tableLayoutFrameRef.current = frame;
-  }, [containerRef, tableLayoutSettled]);
+  }, [containerRef, tableCellWrap, tableLayoutSettled]);
+  const scheduleTableLayoutRef = React.useRef(scheduleTableLayout);
+  React.useEffect(() => {
+    scheduleTableLayoutRef.current = scheduleTableLayout;
+  }, [scheduleTableLayout]);
 
   React.useEffect(() => () => {
+    stopTableWidthWatchRef.current?.();
+    stopTableWidthWatchRef.current = null;
     const frame = tableLayoutFrameRef.current;
     if (frame === null) return;
     window.cancelAnimationFrame(frame);
@@ -958,6 +1012,7 @@ const useMorphdomMarkdown = ({
       }
       for (const [key, value] of Object.entries(syntaxVars)) target.style.setProperty(key, value);
       applyMarkdownCodeBlockWrapState(target, ctx.codeBlockLineWrap, ctx.labels);
+      applyMarkdownTableWrapState(target, ctx.tableCellWrap, ctx.labels);
       mountedDomRef.current = {
         key: domCacheKey,
         copiedLabel: ctx.labels.copied,
@@ -1415,6 +1470,7 @@ const SimpleMarkdownRendererImpl: React.FC<{
   );
 };
 
+/** @public Consumed as a named export by the lazy Markdown renderer loader. */
 export const SimpleMarkdownRenderer = React.memo(SimpleMarkdownRendererImpl, (prev, next) => {
   const prevMermaidControls = prev.mermaidControls ?? DEFAULT_MERMAID_CONTROLS;
   const nextMermaidControls = next.mermaidControls ?? DEFAULT_MERMAID_CONTROLS;
